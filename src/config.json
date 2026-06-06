@@ -1,5 +1,13 @@
 {
   "includeCorsCredentials": false,
+  "hlsBuffer": {
+    "maxBufferLength": 30,
+    "highBitrateMaxBufferLength": 6,
+    "highBitrateThreshold": 25000000,
+    "maxMaxBufferLength": 120,
+    "maxBufferSize": 524288000,
+    "backBufferLength": 60
+  },
   "multiserver": false,
   "themes": [
     {

@@ -260,11 +260,16 @@ export function destroyFlvPlayer(instance) {
 }
 
 export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
+    let startupReject = reject;
+
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
-        playWithPromise(elem, onErrorFn).then(resolve, function () {
-            if (reject) {
-                reject();
-                reject = null;
+        playWithPromise(elem, onErrorFn).then(function () {
+            resolve();
+            startupReject = null;
+        }, function () {
+            if (startupReject) {
+                startupReject();
+                startupReject = null;
             }
         });
     });
@@ -278,12 +283,18 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
         ) {
             console.debug('hls.js response error code: ' + data.response.code);
 
+            // hls.js applies its fragment retry policy to non-fatal HTTP errors.
+            // Destroying the player here would cancel those retries.
+            if (!data.fatal) {
+                return;
+            }
+
             // Trigger failure differently depending on whether this is prior to start of playback, or after
             hls.destroy();
 
-            if (reject) {
-                reject(MediaError.SERVER_ERROR);
-                reject = null;
+            if (startupReject) {
+                startupReject(MediaError.SERVER_ERROR);
+                startupReject = null;
             } else {
                 onErrorInternal(instance, MediaError.SERVER_ERROR);
             }
@@ -303,9 +314,9 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                         // Trigger failure differently depending on whether this is prior to start of playback, or after
                         hls.destroy();
 
-                        if (reject) {
-                            reject(MediaError.NETWORK_ERROR);
-                            reject = null;
+                        if (startupReject) {
+                            startupReject(MediaError.NETWORK_ERROR);
+                            startupReject = null;
                         } else {
                             onErrorInternal(instance, MediaError.NETWORK_ERROR);
                         }
@@ -317,8 +328,8 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                     break;
                 case Hls.ErrorTypes.MEDIA_ERROR:
                     console.debug('fatal media error encountered, try to recover');
-                    handleHlsJsMediaError(instance, reject);
-                    reject = null;
+                    handleHlsJsMediaError(instance, startupReject);
+                    startupReject = null;
                     break;
                 default:
 
@@ -327,9 +338,9 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                     // Trigger failure differently depending on whether this is prior to start of playback, or after
                     hls.destroy();
 
-                    if (reject) {
-                        reject();
-                        reject = null;
+                    if (startupReject) {
+                        startupReject();
+                        startupReject = null;
                     } else {
                         onErrorInternal(instance, MediaError.FATAL_HLS_ERROR);
                     }

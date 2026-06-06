@@ -11,8 +11,18 @@ export interface MenuLink {
     url: string
 }
 
+export interface HlsBufferConfig {
+    maxBufferLength?: number
+    highBitrateMaxBufferLength?: number
+    highBitrateThreshold?: number
+    maxMaxBufferLength?: number
+    maxBufferSize?: number
+    backBufferLength?: number
+}
+
 export interface WebConfig {
     includeCorsCredentials?: boolean
+    hlsBuffer?: HlsBufferConfig
     multiserver?: boolean
     themes?: Theme[]
     menuLinks?: MenuLink[]
