@@ -33,6 +33,63 @@ export function getIncludeCorsCredentials() {
         });
 }
 
+const DEFAULT_HLS_BUFFER = Object.freeze({
+    maxBufferLength: 30,
+    highBitrateMaxBufferLength: 6,
+    highBitrateThreshold: 25_000_000,
+    maxMaxBufferLength: 120,
+    maxBufferSize: 500 * 1024 * 1024,
+    backBufferLength: 60
+});
+
+function positiveNumber(value, fallback) {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ?
+        value :
+        fallback;
+}
+
+export function normalizeHlsBufferConfig(config) {
+    const configured = config?.hlsBuffer || {};
+    const maxBufferLength = positiveNumber(configured.maxBufferLength, DEFAULT_HLS_BUFFER.maxBufferLength);
+    const maxMaxBufferLength = Math.max(
+        maxBufferLength,
+        positiveNumber(configured.maxMaxBufferLength, DEFAULT_HLS_BUFFER.maxMaxBufferLength)
+    );
+
+    return {
+        maxBufferLength,
+        highBitrateMaxBufferLength: positiveNumber(
+            configured.highBitrateMaxBufferLength,
+            DEFAULT_HLS_BUFFER.highBitrateMaxBufferLength
+        ),
+        highBitrateThreshold: positiveNumber(
+            configured.highBitrateThreshold,
+            DEFAULT_HLS_BUFFER.highBitrateThreshold
+        ),
+        maxMaxBufferLength,
+        maxBufferSize: positiveNumber(configured.maxBufferSize, DEFAULT_HLS_BUFFER.maxBufferSize),
+        backBufferLength: positiveNumber(configured.backBufferLength, DEFAULT_HLS_BUFFER.backBufferLength)
+    };
+}
+
+export function getHlsBufferConfig() {
+    return getConfig()
+        .then(normalizeHlsBufferConfig)
+        .catch(error => {
+            console.log('cannot get web config:', error);
+            return { ...DEFAULT_HLS_BUFFER };
+        });
+}
+
+export function toHlsJsBufferConfig(config, highBitrate = false) {
+    return {
+        maxBufferLength: highBitrate ? config.highBitrateMaxBufferLength : config.maxBufferLength,
+        maxMaxBufferLength: config.maxMaxBufferLength,
+        maxBufferSize: config.maxBufferSize,
+        backBufferLength: config.backBufferLength
+    };
+}
+
 export function getMultiServer() {
     // Enable multi-server support when served by webpack
     if (__WEBPACK_SERVE__) {
