@@ -52,6 +52,8 @@ import {
     getForwardBufferSeconds,
     startPlaybackDiagnostics
 } from '../../components/playback/playbackDiagnostics';
+import { getPlaybackBitrate } from './hlsPlaybackConfig';
+import { findActiveTrackEvent } from './subtitleTrackEvents';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -321,6 +323,9 @@ export class HtmlVideoPlayer {
      * @type {any | null | undefined}
      */
     #currentSecondaryTrackEvents;
+    #currentTrackEventIndexes = [ 0, 0 ];
+    #renderedTrackEvents = [ null, null ];
+    #subtitleElementsVisible = [ false, false ];
     /**
      * @type {string[] | undefined}
      */
@@ -564,9 +569,10 @@ export class HtmlVideoPlayer {
                     getIncludeCorsCredentials(),
                     getHlsBufferConfig()
                 ]);
+                const mediaBitrate = getPlaybackBitrate(options.mediaSource, url);
                 const highBitrate = (
                     (browser.chrome || browser.edgeChromium || browser.firefox)
-                    && playbackManager.getMaxStreamingBitrate(this) >= hlsBuffer.highBitrateThreshold
+                    && mediaBitrate >= hlsBuffer.highBitrateThreshold
                 );
                 const hlsConfig = toHlsJsBufferConfig(hlsBuffer, highBitrate);
 
@@ -574,6 +580,7 @@ export class HtmlVideoPlayer {
                     startPosition: options.playerStartPositionTicks / 10000000,
                     manifestLoadingTimeOut: 20000,
                     ...hlsConfig,
+                    capLevelOnFPSDrop: true,
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
@@ -1297,14 +1304,23 @@ export class HtmlVideoPlayer {
         if (this.isPrimaryTrack(targetTrackIndex)) {
             this.#customTrackIndex = -1;
             this.#currentTrackEvents = null;
+            this.#currentTrackEventIndexes[0] = 0;
+            this.#renderedTrackEvents[0] = null;
+            this.#subtitleElementsVisible[0] = false;
         } else if (this.isSecondaryTrack(targetTrackIndex)) {
             this.#customSecondaryTrackIndex = -1;
             this.#currentSecondaryTrackEvents = null;
+            this.#currentTrackEventIndexes[1] = 0;
+            this.#renderedTrackEvents[1] = null;
+            this.#subtitleElementsVisible[1] = false;
         } else { // destroy all
             this.#customTrackIndex = -1;
             this.#customSecondaryTrackIndex = -1;
             this.#currentTrackEvents = null;
             this.#currentSecondaryTrackEvents = null;
+            this.#currentTrackEventIndexes = [ 0, 0 ];
+            this.#renderedTrackEvents = [ null, null ];
+            this.#subtitleElementsVisible = [ false, false ];
         }
     }
 
@@ -1578,16 +1594,21 @@ export class HtmlVideoPlayer {
                 }
                 const subtitlesElement = document.createElement('div');
                 subtitlesElement.classList.add('videoSubtitlesInner');
+                subtitlesElement.classList.add('hide');
                 subtitlesContainer.appendChild(subtitlesElement);
                 this.#videoSubtitlesElem = subtitlesElement;
                 this.setSubtitleAppearance(subtitlesContainer, this.#videoSubtitlesElem);
                 videoElement.parentNode.appendChild(subtitlesContainer);
                 this.#currentTrackEvents = subtitleData.TrackEvents;
+                this.#currentTrackEventIndexes[0] = 0;
+                this.#renderedTrackEvents[0] = null;
+                this.#subtitleElementsVisible[0] = false;
             } else if (!this.#videoSecondarySubtitlesElem && this.isSecondaryTrack(targetTextTrackIndex)) {
                 const subtitlesContainer = document.querySelector('.videoSubtitles');
                 if (!subtitlesContainer) return;
                 const secondarySubtitlesElement = document.createElement('div');
                 secondarySubtitlesElement.classList.add('videoSecondarySubtitlesInner');
+                secondarySubtitlesElement.classList.add('hide');
                 // determine the order of the subtitles
                 if (subtitleVerticalPosition < 0) {
                     subtitlesContainer.insertBefore(secondarySubtitlesElement, subtitlesContainer.firstChild);
@@ -1597,6 +1618,9 @@ export class HtmlVideoPlayer {
                 this.#videoSecondarySubtitlesElem = secondarySubtitlesElement;
                 this.setSubtitleAppearance(subtitlesContainer, this.#videoSecondarySubtitlesElem);
                 this.#currentSecondaryTrackEvents = subtitleData.TrackEvents;
+                this.#currentTrackEventIndexes[1] = 0;
+                this.#renderedTrackEvents[1] = null;
+                this.#subtitleElementsVisible[1] = false;
             }
         });
     }
@@ -1729,20 +1753,29 @@ export class HtmlVideoPlayer {
 
             if (trackEvents && subtitleTextElement) {
                 const ticks = timeMs * 10000;
-                let selectedTrackEvent;
-                for (const trackEvent of trackEvents) {
-                    if (trackEvent.StartPositionTicks <= ticks && trackEvent.EndPositionTicks >= ticks) {
-                        selectedTrackEvent = trackEvent;
-                        break;
-                    }
-                }
+                const activeTrackEvent = findActiveTrackEvent(
+                    trackEvents,
+                    ticks,
+                    this.#currentTrackEventIndexes[i]
+                );
+                const selectedTrackEvent = activeTrackEvent.event;
+                this.#currentTrackEventIndexes[i] = activeTrackEvent.index;
 
                 if (selectedTrackEvent?.Text) {
-                    subtitleTextElement.innerHTML = DOMPurify.sanitize(
-                        normalizeTrackEventText(selectedTrackEvent.Text, true));
-                    subtitleTextElement.classList.remove('hide');
-                } else {
+                    if (this.#renderedTrackEvents[i] !== selectedTrackEvent) {
+                        subtitleTextElement.innerHTML = DOMPurify.sanitize(
+                            normalizeTrackEventText(selectedTrackEvent.Text, true));
+                        this.#renderedTrackEvents[i] = selectedTrackEvent;
+                    }
+
+                    if (!this.#subtitleElementsVisible[i]) {
+                        subtitleTextElement.classList.remove('hide');
+                        this.#subtitleElementsVisible[i] = true;
+                    }
+                } else if (this.#subtitleElementsVisible[i]) {
                     subtitleTextElement.classList.add('hide');
+                    this.#renderedTrackEvents[i] = null;
+                    this.#subtitleElementsVisible[i] = false;
                 }
             }
         }

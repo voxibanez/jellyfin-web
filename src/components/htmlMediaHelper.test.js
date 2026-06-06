@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MediaError } from 'types/mediaError';
 import Events from '../utils/events';
-import { bindEventsToHlsPlayer } from './htmlMediaHelper';
+import {
+    bindEventsToHlsPlayer,
+    handleHlsJsMediaError
+} from './htmlMediaHelper';
 
 describe('bindEventsToHlsPlayer', () => {
     let handlers;
@@ -86,5 +89,28 @@ describe('bindEventsToHlsPlayer', () => {
 
         expect(hls.destroy).toHaveBeenCalledOnce();
         expect(reject).toHaveBeenCalledWith(MediaError.SERVER_ERROR);
+    });
+
+    it('tracks media error recovery independently for each player instance', () => {
+        const firstPlayer = {
+            recoverMediaError: vi.fn(),
+            swapAudioCodec: vi.fn()
+        };
+        const secondPlayer = {
+            recoverMediaError: vi.fn(),
+            swapAudioCodec: vi.fn()
+        };
+        const now = vi.spyOn(performance, 'now')
+            .mockReturnValueOnce(1000)
+            .mockReturnValueOnce(1001);
+
+        handleHlsJsMediaError({ _hlsPlayer: firstPlayer });
+        handleHlsJsMediaError({ _hlsPlayer: secondPlayer });
+
+        expect(firstPlayer.recoverMediaError).toHaveBeenCalledOnce();
+        expect(secondPlayer.recoverMediaError).toHaveBeenCalledOnce();
+        expect(firstPlayer.swapAudioCodec).not.toHaveBeenCalled();
+        expect(secondPlayer.swapAudioCodec).not.toHaveBeenCalled();
+        now.mockRestore();
     });
 });

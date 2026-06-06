@@ -78,8 +78,8 @@ export function enableHlsJsPlayer(runTimeTicks, mediaType) {
     return true;
 }
 
-let recoverDecodingErrorDate;
-let recoverSwapAudioCodecDate;
+const hlsRecoveryState = new WeakMap();
+
 export function handleHlsJsMediaError(instance, reject) {
     const hlsPlayer = instance._hlsPlayer;
 
@@ -93,12 +93,16 @@ export function handleHlsJsMediaError(instance, reject) {
         now = performance.now();
     }
 
-    if (!recoverDecodingErrorDate || (now - recoverDecodingErrorDate) > 3000) {
-        recoverDecodingErrorDate = now;
+    const recoveryState = hlsRecoveryState.get(instance) || {};
+
+    if (!recoveryState.decodingErrorDate || (now - recoveryState.decodingErrorDate) > 3000) {
+        recoveryState.decodingErrorDate = now;
+        hlsRecoveryState.set(instance, recoveryState);
         console.debug('try to recover media Error ...');
         hlsPlayer.recoverMediaError();
-    } else if (!recoverSwapAudioCodecDate || (now - recoverSwapAudioCodecDate) > 3000) {
-        recoverSwapAudioCodecDate = now;
+    } else if (!recoveryState.swapAudioCodecDate || (now - recoveryState.swapAudioCodecDate) > 3000) {
+        recoveryState.swapAudioCodecDate = now;
+        hlsRecoveryState.set(instance, recoveryState);
         console.debug('try to swap Audio Codec and recover media Error ...');
         hlsPlayer.swapAudioCodec();
         hlsPlayer.recoverMediaError();
@@ -246,6 +250,8 @@ export function destroyHlsPlayer(instance) {
 
         instance._hlsPlayer = null;
     }
+
+    hlsRecoveryState.delete(instance);
 
     stopPlaybackDiagnostics(instance).catch(error => {
         console.warn('[playbackDiagnostics] failed to stop diagnostics:', error);

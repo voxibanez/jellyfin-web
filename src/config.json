@@ -1,12 +1,12 @@
 {
   "includeCorsCredentials": false,
   "hlsBuffer": {
-    "maxBufferLength": 30,
-    "highBitrateMaxBufferLength": 6,
+    "maxBufferLength": 45,
+    "highBitrateMaxBufferLength": 15,
     "highBitrateThreshold": 25000000,
     "maxMaxBufferLength": 120,
-    "maxBufferSize": 524288000,
-    "backBufferLength": 60
+    "maxBufferSize": 134217728,
+    "backBufferLength": 30
   },
   "playbackDiagnostics": {
     "enabled": true,
@@ -14,7 +14,7 @@
     "flushIntervalMs": 30000,
     "maxRuns": 20,
     "maxAgeDays": 7,
-    "maxEventsPerRun": 10000,
+    "maxEventsPerRun": 50000,
     "maxSamplesPerRun": 30000,
     "reportUrl": null
   },
