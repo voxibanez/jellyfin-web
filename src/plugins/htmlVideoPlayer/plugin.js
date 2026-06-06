@@ -48,6 +48,10 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
+import {
+    getForwardBufferSeconds,
+    startPlaybackDiagnostics
+} from '../../components/playback/playbackDiagnostics';
 
 /**
  * Returns resolved URL.
@@ -515,6 +519,14 @@ export class HtmlVideoPlayer {
         this.#audioTrackIndexToSetOnPlaying = options.playMethod === 'Transcode' ? null : options.mediaSource.DefaultAudioStreamIndex;
 
         this._currentPlayOptions = options;
+
+        startPlaybackDiagnostics(
+            this,
+            elem,
+            isHls(options.mediaSource) ? 'hls' : 'media'
+        ).catch(error => {
+            console.warn('[playbackDiagnostics] failed to start diagnostics:', error);
+        });
 
         if (secondaryTrackValid) {
             this.#secondarySubtitleTrackIndexToSetOnPlaying = options.mediaSource.DefaultSecondarySubtitleStreamIndex == null ? -1 : options.mediaSource.DefaultSecondarySubtitleStreamIndex;
@@ -2167,6 +2179,11 @@ export class HtmlVideoPlayer {
             type: 'video'
         };
         categories.push(videoCategory);
+
+        videoCategory.stats.push({
+            label: 'Forward buffer',
+            value: `${getForwardBufferSeconds(mediaElement).toFixed(1)} s`
+        });
 
         const devicePixelRatio = window.devicePixelRatio || 1;
         const rect = mediaElement.getBoundingClientRect ? mediaElement.getBoundingClientRect() : {};

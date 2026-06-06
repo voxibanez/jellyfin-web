@@ -20,9 +20,21 @@ export interface HlsBufferConfig {
     backBufferLength?: number
 }
 
+export interface PlaybackDiagnosticsConfig {
+    enabled?: boolean
+    sampleIntervalMs?: number
+    flushIntervalMs?: number
+    maxRuns?: number
+    maxAgeDays?: number
+    maxEventsPerRun?: number
+    maxSamplesPerRun?: number
+    reportUrl?: string | null
+}
+
 export interface WebConfig {
     includeCorsCredentials?: boolean
     hlsBuffer?: HlsBufferConfig
+    playbackDiagnostics?: PlaybackDiagnosticsConfig
     multiserver?: boolean
     themes?: Theme[]
     menuLinks?: MenuLink[]

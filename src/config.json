@@ -8,6 +8,16 @@
     "maxBufferSize": 524288000,
     "backBufferLength": 60
   },
+  "playbackDiagnostics": {
+    "enabled": true,
+    "sampleIntervalMs": 1000,
+    "flushIntervalMs": 30000,
+    "maxRuns": 20,
+    "maxAgeDays": 7,
+    "maxEventsPerRun": 10000,
+    "maxSamplesPerRun": 30000,
+    "reportUrl": null
+  },
   "multiserver": false,
   "themes": [
     {

@@ -30,3 +30,40 @@ is the byte budget. hls.js uses both, so a 120-second ceiling does not force a
 
 After building, these values can be changed in the deployed `config.json`
 without rebuilding the JavaScript bundles.
+
+## Playback diagnostics
+
+Client playback diagnostics are enabled by default and stored in IndexedDB in
+the browser profile. Records contain one-second media samples, forward buffer
+depth, media events, dropped frames, and HLS fragment timing and errors. URL
+query strings are removed before data is stored.
+
+Retention and sampling are controlled in `config.json`:
+
+```json
+{
+  "playbackDiagnostics": {
+    "enabled": true,
+    "sampleIntervalMs": 1000,
+    "flushIntervalMs": 30000,
+    "maxRuns": 20,
+    "maxAgeDays": 7,
+    "maxEventsPerRun": 10000,
+    "maxSamplesPerRun": 30000,
+    "reportUrl": null
+  }
+}
+```
+
+Set `enabled` to `false` to opt out. `reportUrl` may point to a custom
+same-origin endpoint that accepts a JSON `POST`; it is `null` by default
+because the standard Jellyfin server does not expose a diagnostics endpoint.
+
+The browser console exposes:
+
+```js
+await JellyfinPlaybackDiagnostics.list()
+await JellyfinPlaybackDiagnostics.export()
+await JellyfinPlaybackDiagnostics.export('<run-id>')
+await JellyfinPlaybackDiagnostics.clear()
+```

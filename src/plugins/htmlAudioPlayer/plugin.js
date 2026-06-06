@@ -12,6 +12,7 @@ import {
     toHlsJsBufferConfig
 } from '../../scripts/settings/webSettings';
 import Events from '../../utils/events.ts';
+import { startPlaybackDiagnostics } from '../../components/playback/playbackDiagnostics';
 
 function getDefaultProfile() {
     return profileBuilder({});
@@ -162,6 +163,14 @@ class HtmlAudioPlayer {
             htmlMediaHelper.destroyHlsPlayer(self);
 
             self._currentPlayOptions = options;
+
+            startPlaybackDiagnostics(
+                self,
+                elem,
+                htmlMediaHelper.enableHlsJsPlayer(options.mediaSource.RunTimeTicks, 'Audio') ? 'hls' : 'media'
+            ).catch(error => {
+                console.warn('[playbackDiagnostics] failed to start diagnostics:', error);
+            });
 
             const crossOrigin = htmlMediaHelper.getCrossOriginValue(options.mediaSource);
             if (crossOrigin) {

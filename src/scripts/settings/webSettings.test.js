@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeHlsBufferConfig, toHlsJsBufferConfig } from './webSettings';
+import {
+    normalizeHlsBufferConfig,
+    normalizePlaybackDiagnosticsConfig,
+    toHlsJsBufferConfig
+} from './webSettings';
 
 describe('HLS buffer configuration', () => {
     it('uses the diagnostic fork defaults', () => {
@@ -61,5 +65,18 @@ describe('HLS buffer configuration', () => {
             maxBufferSize: 500 * 1024 * 1024,
             backBufferLength: 60
         });
+    });
+});
+
+describe('playback diagnostics configuration', () => {
+    it('is enabled by default and can be opted out', () => {
+        expect(normalizePlaybackDiagnosticsConfig({}).enabled).toBe(true);
+        expect(normalizePlaybackDiagnosticsConfig({
+            playbackDiagnostics: { enabled: false }
+        }).enabled).toBe(false);
+    });
+
+    it('does not configure server reporting by default', () => {
+        expect(normalizePlaybackDiagnosticsConfig({}).reportUrl).toBeNull();
     });
 });
