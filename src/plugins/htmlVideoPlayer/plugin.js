@@ -39,7 +39,11 @@ import {
 import itemHelper from '../../components/itemHelper';
 import globalize from '../../lib/globalize';
 import profileBuilder, { canPlaySecondaryAudio } from '../../scripts/browserDeviceProfile';
-import { getIncludeCorsCredentials } from '../../scripts/settings/webSettings';
+import {
+    getHlsBufferConfig,
+    getIncludeCorsCredentials,
+    toHlsJsBufferConfig
+} from '../../scripts/settings/webSettings';
 import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/backdrop/backdrop';
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
@@ -440,23 +444,20 @@ export class HtmlVideoPlayer {
     setSrcWithHlsJs(elem, options, url) {
         return new Promise((resolve, reject) => {
             requireHlsPlayer(async () => {
-                let maxBufferLength = 30;
-
-                // Some browsers cannot handle huge fragments in high bitrate.
-                // This issue usually happens when using HWA encoders with a high bitrate setting.
-                // Limit the BufferLength to 6s, it works fine when playing 4k 120Mbps over HLS on chrome.
-                // https://github.com/video-dev/hls.js/issues/876
-                if ((browser.chrome || browser.edgeChromium || browser.firefox) && playbackManager.getMaxStreamingBitrate(this) >= 25000000) {
-                    maxBufferLength = 6;
-                }
-
-                const includeCorsCredentials = await getIncludeCorsCredentials();
+                const [ includeCorsCredentials, hlsBuffer ] = await Promise.all([
+                    getIncludeCorsCredentials(),
+                    getHlsBufferConfig()
+                ]);
+                const highBitrate = (
+                    (browser.chrome || browser.edgeChromium || browser.firefox)
+                    && playbackManager.getMaxStreamingBitrate(this) >= hlsBuffer.highBitrateThreshold
+                );
+                const hlsConfig = toHlsJsBufferConfig(hlsBuffer, highBitrate);
 
                 const hls = new Hls({
                     startPosition: options.playerStartPositionTicks / 10000000,
                     manifestLoadingTimeOut: 20000,
-                    maxBufferLength: maxBufferLength,
-                    maxMaxBufferLength: maxBufferLength,
+                    ...hlsConfig,
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;

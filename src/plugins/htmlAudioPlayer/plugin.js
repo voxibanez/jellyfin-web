@@ -6,7 +6,11 @@ import browser from '../../scripts/browser';
 import { appHost } from '../../components/apphost';
 import * as htmlMediaHelper from '../../components/htmlMediaHelper';
 import profileBuilder from '../../scripts/browserDeviceProfile';
-import { getIncludeCorsCredentials } from '../../scripts/settings/webSettings';
+import {
+    getHlsBufferConfig,
+    getIncludeCorsCredentials,
+    toHlsJsBufferConfig
+} from '../../scripts/settings/webSettings';
 import Events from '../../utils/events.ts';
 
 function getDefaultProfile() {
@@ -167,10 +171,15 @@ class HtmlAudioPlayer {
             return enableHlsPlayer(val, options.item, options.mediaSource, 'Audio').then(function () {
                 return new Promise(function (resolve, reject) {
                     requireHlsPlayer(async () => {
-                        const includeCorsCredentials = await getIncludeCorsCredentials();
+                        const [ includeCorsCredentials, hlsBuffer ] = await Promise.all([
+                            getIncludeCorsCredentials(),
+                            getHlsBufferConfig()
+                        ]);
+                        const hlsConfig = toHlsJsBufferConfig(hlsBuffer);
 
                         const hls = new Hls({
                             manifestLoadingTimeOut: 20000,
+                            ...hlsConfig,
                             xhrSetup: function (xhr) {
                                 xhr.withCredentials = includeCorsCredentials;
                             }
