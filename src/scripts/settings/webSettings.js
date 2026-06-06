@@ -34,12 +34,12 @@ export function getIncludeCorsCredentials() {
 }
 
 const DEFAULT_HLS_BUFFER = Object.freeze({
-    maxBufferLength: 30,
-    highBitrateMaxBufferLength: 6,
+    maxBufferLength: 45,
+    highBitrateMaxBufferLength: 15,
     highBitrateThreshold: 25_000_000,
     maxMaxBufferLength: 120,
-    maxBufferSize: 500 * 1024 * 1024,
-    backBufferLength: 60
+    maxBufferSize: 128 * 1024 * 1024,
+    backBufferLength: 30
 });
 
 function positiveNumber(value, fallback) {
@@ -96,7 +96,7 @@ const DEFAULT_PLAYBACK_DIAGNOSTICS = Object.freeze({
     flushIntervalMs: 30000,
     maxRuns: 20,
     maxAgeDays: 7,
-    maxEventsPerRun: 10000,
+    maxEventsPerRun: 50000,
     maxSamplesPerRun: 30000,
     reportUrl: null
 });

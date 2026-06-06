@@ -21,15 +21,17 @@ const Assets = [
 ];
 
 const DEV_MODE = process.env.NODE_ENV !== 'production';
-let COMMIT_SHA = '';
-try {
-    COMMIT_SHA = require('child_process')
-        // eslint-disable-next-line sonarjs/no-os-command-from-path
-        .execSync('git describe --always --dirty')
-        .toString()
-        .trim();
-} catch (err) {
-    console.warn('Failed to get commit sha. Is git installed?', err);
+let COMMIT_SHA = process.env.COMMIT_SHA || '';
+if (!COMMIT_SHA) {
+    try {
+        COMMIT_SHA = require('child_process')
+            // eslint-disable-next-line sonarjs/no-os-command-from-path
+            .execSync('git describe --always --dirty')
+            .toString()
+            .trim();
+    } catch (err) {
+        console.warn('Failed to get commit sha. Is git installed?', err);
+    }
 }
 
 const NODE_MODULES_REGEX = /[\\/]node_modules[\\/]/;

@@ -1,8 +1,9 @@
 import { getPlaybackDiagnosticsConfig } from '../../scripts/settings/webSettings';
 
 const DB_NAME = 'jellyfin-playback-diagnostics';
-const DB_VERSION = 1;
-const STORE_NAME = 'runs';
+const DB_VERSION = 2;
+const RUN_STORE_NAME = 'runs';
+const CHUNK_STORE_NAME = 'chunks';
 const activeRuns = new WeakMap();
 
 function nowIso() {
@@ -41,21 +42,25 @@ function openDatabase() {
         request.onerror = () => reject(request.error);
         request.onupgradeneeded = () => {
             const database = request.result;
-            if (!database.objectStoreNames.contains(STORE_NAME)) {
-                const store = database.createObjectStore(STORE_NAME, { keyPath: 'id' });
+            if (!database.objectStoreNames.contains(RUN_STORE_NAME)) {
+                const store = database.createObjectStore(RUN_STORE_NAME, { keyPath: 'id' });
                 store.createIndex('startedAt', 'startedAt');
+            }
+            if (!database.objectStoreNames.contains(CHUNK_STORE_NAME)) {
+                const store = database.createObjectStore(CHUNK_STORE_NAME, { keyPath: 'id' });
+                store.createIndex('runId', 'runId');
             }
         };
         request.onsuccess = () => resolve(request.result);
     });
 }
 
-async function withStore(mode, callback) {
+async function withStore(storeName, mode, callback) {
     const database = await openDatabase();
 
     return new Promise((resolve, reject) => {
-        const transaction = database.transaction(STORE_NAME, mode);
-        const store = transaction.objectStore(STORE_NAME);
+        const transaction = database.transaction(storeName, mode);
+        const store = transaction.objectStore(storeName);
         let result;
 
         try {
@@ -77,20 +82,78 @@ async function withStore(mode, callback) {
     });
 }
 
-async function persist(run) {
+async function persistRun(run) {
     run.updatedAt = nowIso();
-    await withStore('readwrite', store => store.put(run));
+    await withStore(RUN_STORE_NAME, 'readwrite', store => store.put(run));
+}
+
+async function persistChunkAndRun(chunk, run) {
+    const database = await openDatabase();
+
+    return new Promise((resolve, reject) => {
+        const transaction = database.transaction([ RUN_STORE_NAME, CHUNK_STORE_NAME ], 'readwrite');
+        transaction.objectStore(CHUNK_STORE_NAME).put(chunk);
+        run.updatedAt = nowIso();
+        transaction.objectStore(RUN_STORE_NAME).put(run);
+        transaction.oncomplete = () => {
+            database.close();
+            resolve();
+        };
+        transaction.onerror = () => {
+            database.close();
+            reject(transaction.error);
+        };
+    });
 }
 
 async function getAllRuns() {
     const database = await openDatabase();
 
     return new Promise((resolve, reject) => {
-        const transaction = database.transaction(STORE_NAME, 'readonly');
-        const request = transaction.objectStore(STORE_NAME).getAll();
+        const transaction = database.transaction(RUN_STORE_NAME, 'readonly');
+        const request = transaction.objectStore(RUN_STORE_NAME).getAll();
         request.onsuccess = () => resolve(request.result || []);
         request.onerror = () => reject(request.error);
         transaction.oncomplete = () => database.close();
+    });
+}
+
+async function getRunChunks(runId) {
+    const database = await openDatabase();
+
+    return new Promise((resolve, reject) => {
+        const transaction = database.transaction(CHUNK_STORE_NAME, 'readonly');
+        const request = transaction.objectStore(CHUNK_STORE_NAME).index('runId').getAll(runId);
+        request.onsuccess = () => resolve((request.result || []).sort((left, right) => left.sequence - right.sequence));
+        request.onerror = () => reject(request.error);
+        transaction.oncomplete = () => database.close();
+    });
+}
+
+async function deleteRun(runId) {
+    const database = await openDatabase();
+
+    return new Promise((resolve, reject) => {
+        const transaction = database.transaction([ RUN_STORE_NAME, CHUNK_STORE_NAME ], 'readwrite');
+        transaction.objectStore(RUN_STORE_NAME).delete(runId);
+
+        const chunkStore = transaction.objectStore(CHUNK_STORE_NAME);
+        const cursorRequest = chunkStore.index('runId').openKeyCursor(IDBKeyRange.only(runId));
+        cursorRequest.onsuccess = () => {
+            const cursor = cursorRequest.result;
+            if (cursor) {
+                chunkStore.delete(cursor.primaryKey);
+                cursor.continue();
+            }
+        };
+        transaction.oncomplete = () => {
+            database.close();
+            resolve();
+        };
+        transaction.onerror = () => {
+            database.close();
+            reject(transaction.error);
+        };
     });
 }
 
@@ -106,11 +169,7 @@ async function prune(config) {
         return;
     }
 
-    await withStore('readwrite', store => {
-        removeIds.forEach(id => {
-            store.delete(id);
-        });
-    });
+    await Promise.all(removeIds.map(deleteRun));
 }
 
 function bufferedRanges(media) {
@@ -171,11 +230,12 @@ function addEvent(state, type, details = {}) {
         return;
     }
 
-    if (state.run.events.length >= state.config.maxEventsPerRun) {
+    if (state.run.eventCount >= state.config.maxEventsPerRun) {
         return;
     }
 
-    state.run.events.push(event);
+    state.pendingEvents.push(event);
+    state.run.eventCount++;
 }
 
 function hlsEventDetails(data = {}) {
@@ -217,6 +277,30 @@ function metadata(instance, transport) {
     };
 }
 
+export function combineRunWithChunks(run, chunks) {
+    const events = Array.isArray(run.events) ? [ ...run.events ] : [];
+    const samples = Array.isArray(run.samples) ? [ ...run.samples ] : [];
+
+    chunks.forEach(chunk => {
+        events.push(...(chunk.events || []));
+        samples.push(...(chunk.samples || []));
+    });
+
+    return {
+        ...run,
+        events,
+        samples
+    };
+}
+
+async function loadCompleteRun(run) {
+    if (Array.isArray(run.events) && Array.isArray(run.samples)) {
+        return run;
+    }
+
+    return combineRunWithChunks(run, await getRunChunks(run.id));
+}
+
 async function reportRun(run, config) {
     if (!config.reportUrl) {
         return;
@@ -234,6 +318,41 @@ async function reportRun(run, config) {
     }
 }
 
+function flushPlaybackDiagnostics(state) {
+    state.flushPromise = state.flushPromise.then(async () => {
+        if (!state.ready) {
+            return;
+        }
+
+        const events = state.pendingEvents.splice(0);
+        const samples = state.pendingSamples.splice(0);
+
+        try {
+            if (events.length || samples.length) {
+                const sequence = state.nextChunkSequence;
+                await persistChunkAndRun({
+                    id: `${state.run.id}:${sequence}`,
+                    runId: state.run.id,
+                    sequence,
+                    events,
+                    samples
+                }, state.run);
+                state.nextChunkSequence++;
+            } else {
+                await persistRun(state.run);
+            }
+        } catch (error) {
+            state.pendingEvents.unshift(...events);
+            state.pendingSamples.unshift(...samples);
+            throw error;
+        }
+    }).catch(error => {
+        console.warn('[playbackDiagnostics] failed to persist diagnostics:', error);
+    });
+
+    return state.flushPromise;
+}
+
 export async function startPlaybackDiagnostics(instance, media, transport = 'media') {
     if (activeRuns.has(instance)) {
         return;
@@ -246,6 +365,9 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         run: null,
         media,
         pendingEvents: [],
+        pendingSamples: [],
+        nextChunkSequence: 0,
+        flushPromise: Promise.resolve(),
         sampleTimer: null,
         flushTimer: null,
         mediaListeners: []
@@ -270,12 +392,12 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         endedAt: null,
         status: 'active',
         metadata: metadata(instance, transport),
-        events: [],
-        samples: []
+        eventCount: 0,
+        sampleCount: 0
     };
     state.ready = true;
-    state.run.events.push(...state.pendingEvents.slice(0, config.maxEventsPerRun));
-    state.pendingEvents = [];
+    state.pendingEvents = state.pendingEvents.slice(0, config.maxEventsPerRun);
+    state.run.eventCount = state.pendingEvents.length;
 
     const mediaEvents = [ 'waiting', 'stalled', 'playing', 'canplay', 'error', 'seeking', 'seeked', 'pause', 'play', 'ended' ];
     mediaEvents.forEach(type => {
@@ -288,19 +410,16 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
     });
 
     const sample = () => {
-        if (state.run.samples.length < config.maxSamplesPerRun) {
-            state.run.samples.push(mediaSample(media));
+        if (state.run.sampleCount < config.maxSamplesPerRun) {
+            state.pendingSamples.push(mediaSample(media));
+            state.run.sampleCount++;
         }
     };
     sample();
     state.sampleTimer = setInterval(sample, config.sampleIntervalMs);
-    state.flushTimer = setInterval(() => {
-        persist(state.run).catch(error => {
-            console.warn('[playbackDiagnostics] failed to persist diagnostics:', error);
-        });
-    }, config.flushIntervalMs);
+    state.flushTimer = setInterval(() => flushPlaybackDiagnostics(state), config.flushIntervalMs);
 
-    await persist(state.run);
+    await persistRun(state.run);
     await prune(config);
 }
 
@@ -370,9 +489,11 @@ export async function stopPlaybackDiagnostics(instance, media, status = 'stopped
 
     state.run.status = status;
     state.run.endedAt = nowIso();
-    state.run.summary = summarizePlaybackRun(state.run);
-    await persist(state.run);
-    await reportRun(state.run, state.config);
+    await flushPlaybackDiagnostics(state);
+    const completeRun = await loadCompleteRun(state.run);
+    state.run.summary = summarizePlaybackRun(completeRun);
+    await persistRun(state.run);
+    await reportRun({ ...completeRun, summary: state.run.summary }, state.config);
 }
 
 export async function listPlaybackDiagnostics() {
@@ -385,15 +506,16 @@ export async function listPlaybackDiagnostics() {
             endedAt: run.endedAt,
             status: run.status,
             metadata: run.metadata,
-            eventCount: run.events.length,
-            sampleCount: run.samples.length
+            eventCount: run.eventCount ?? run.events?.length ?? 0,
+            sampleCount: run.sampleCount ?? run.samples?.length ?? 0
         }));
 }
 
 export async function exportPlaybackDiagnostics(runId) {
     const runs = await getAllRuns();
     const selected = runId ? runs.filter(run => run.id === runId) : runs;
-    const blob = new Blob([ JSON.stringify(selected, null, 2) ], { type: 'application/json' });
+    const completeRuns = await Promise.all(selected.map(loadCompleteRun));
+    const blob = new Blob([ JSON.stringify(completeRuns, null, 2) ], { type: 'application/json' });
     const link = document.createElement('a');
     link.href = URL.createObjectURL(blob);
     link.download = `jellyfin-playback-diagnostics-${new Date().toISOString().replaceAll(':', '-')}.json`;
@@ -402,7 +524,10 @@ export async function exportPlaybackDiagnostics(runId) {
 }
 
 export async function clearPlaybackDiagnostics() {
-    await withStore('readwrite', store => store.clear());
+    await Promise.all([
+        withStore(RUN_STORE_NAME, 'readwrite', store => store.clear()),
+        withStore(CHUNK_STORE_NAME, 'readwrite', store => store.clear())
+    ]);
 }
 
 if (typeof window !== 'undefined') {

@@ -9,12 +9,12 @@ import {
 describe('HLS buffer configuration', () => {
     it('uses the diagnostic fork defaults', () => {
         expect(normalizeHlsBufferConfig({})).toEqual({
-            maxBufferLength: 30,
-            highBitrateMaxBufferLength: 6,
+            maxBufferLength: 45,
+            highBitrateMaxBufferLength: 15,
             highBitrateThreshold: 25_000_000,
             maxMaxBufferLength: 120,
-            maxBufferSize: 500 * 1024 * 1024,
-            backBufferLength: 60
+            maxBufferSize: 128 * 1024 * 1024,
+            backBufferLength: 30
         });
     });
 
@@ -48,11 +48,11 @@ describe('HLS buffer configuration', () => {
             }
         })).toEqual({
             maxBufferLength: 180,
-            highBitrateMaxBufferLength: 6,
+            highBitrateMaxBufferLength: 15,
             highBitrateThreshold: 25_000_000,
             maxMaxBufferLength: 180,
-            maxBufferSize: 500 * 1024 * 1024,
-            backBufferLength: 60
+            maxBufferSize: 128 * 1024 * 1024,
+            backBufferLength: 30
         });
     });
 
@@ -60,10 +60,10 @@ describe('HLS buffer configuration', () => {
         const config = normalizeHlsBufferConfig({});
 
         expect(toHlsJsBufferConfig(config, true)).toEqual({
-            maxBufferLength: 6,
+            maxBufferLength: 15,
             maxMaxBufferLength: 120,
-            maxBufferSize: 500 * 1024 * 1024,
-            backBufferLength: 60
+            maxBufferSize: 128 * 1024 * 1024,
+            backBufferLength: 30
         });
     });
 });

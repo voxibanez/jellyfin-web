@@ -34,6 +34,8 @@ import { MediaError } from 'types/mediaError';
 import { getMediaError } from 'utils/mediaError';
 import { toApi } from 'utils/jellyfin-apiclient/compat';
 import { bindSkipSegment } from './skipsegment.ts';
+import { enableAdaptiveHls } from './adaptiveHls';
+import { changeStreamWithEncodingCleanup } from './streamChange';
 import * as bitrateTest from 'utils/bitrateTest';
 
 const UNLIMITED_ITEMS = -1;
@@ -1710,7 +1712,7 @@ export class PlaybackManager {
 
             const currentItem = self.currentItem(player);
 
-            player.getDeviceProfile(currentItem, {
+            return player.getDeviceProfile(currentItem, {
                 isRetry: params.EnableDirectPlay === false
             }).then(function (deviceProfile) {
                 const audioStreamIndex = params.AudioStreamIndex == null ? getPlayerData(player).audioStreamIndex : params.AudioStreamIndex;
@@ -1740,7 +1742,7 @@ export class PlaybackManager {
                     allowAudioStreamCopy: params.AllowAudioStreamCopy
                 };
 
-                getPlaybackInfo(player, apiClient, currentItem, deviceProfile, currentMediaSource.Id, liveStreamId, options).then(function (result) {
+                return getPlaybackInfo(player, apiClient, currentItem, deviceProfile, currentMediaSource.Id, liveStreamId, options).then(function (result) {
                     if (validatePlaybackInfoResult(self, result)) {
                         currentMediaSource = result.MediaSources[0];
 
@@ -1760,9 +1762,16 @@ export class PlaybackManager {
                         getPlayerData(player).audioStreamIndex = audioStreamIndex;
                         getPlayerData(player).maxStreamingBitrate = maxBitrate;
 
-                        changeStreamToUrl(apiClient, player, playSessionId, streamInfo);
+                        return changeStreamToUrl(apiClient, player, playSessionId, streamInfo);
                     }
                 });
+            }).catch(function (error) {
+                const errorType = getMediaError(error);
+                const playerData = getPlayerData(player);
+                playerData.isChangingStream = false;
+                console.error('[playbackmanager] failed to change stream:', error);
+                Events.trigger(self, 'playbackerror', [errorType]);
+                onPlaybackStopped.call(player, error, `.${errorType}`);
             });
         }
 
@@ -1771,17 +1780,14 @@ export class PlaybackManager {
 
             playerData.isChangingStream = true;
 
-            if (playerData.streamInfo && playSessionId) {
-                apiClient.stopActiveEncodings(playSessionId).then(function () {
-                    // Stop the first transcoding afterwards because the player may still send requests to the original url
-                    const afterSetSrc = function () {
-                        apiClient.stopActiveEncodings(playSessionId);
-                    };
-                    setSrcIntoPlayer(apiClient, player, streamInfo).then(afterSetSrc, afterSetSrc);
-                });
-            } else {
-                setSrcIntoPlayer(apiClient, player, streamInfo);
-            }
+            return changeStreamWithEncodingCleanup({
+                playSessionId: playerData.streamInfo ? playSessionId : null,
+                setSource: () => setSrcIntoPlayer(apiClient, player, streamInfo),
+                stopActiveEncodings: sessionId => apiClient.stopActiveEncodings(sessionId),
+                onCleanupError: (error, phase) => {
+                    console.warn(`[playbackmanager] failed to stop previous encoding ${phase} changing stream:`, error);
+                }
+            });
         }
 
         function setSrcIntoPlayer(apiClient, player, streamInfo) {
@@ -2867,6 +2873,7 @@ export class PlaybackManager {
                     mediaUrl = apiClient.getUrl(mediaSource.TranscodingUrl);
 
                     if (mediaSource.TranscodingSubProtocol === 'hls') {
+                        mediaUrl = enableAdaptiveHls(mediaUrl, type, mediaSource);
                         contentType = 'application/x-mpegURL';
                     } else {
                         contentType = getMimeType(type.toLowerCase(), mediaSource.TranscodingContainer);
