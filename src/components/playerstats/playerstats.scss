@@ -35,6 +35,14 @@
     z-index: 1;
 }
 
+.playerStats-exportButton {
+    position: absolute;
+    top: 0.25em;
+    right: 3.5em;
+    color: #ccc;
+    z-index: 1;
+}
+
 .playerStats-stats {
     display: flex;
     flex-direction: column;

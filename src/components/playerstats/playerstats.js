@@ -6,6 +6,7 @@ import { getReadableSize } from 'utils/file';
 
 import layoutManager from '../layoutManager';
 import { playbackManager } from '../playback/playbackmanager';
+import { exportPlaybackDiagnostics } from '../playback/playbackDiagnostics';
 import playMethodHelper from '../playback/playmethodhelper';
 import { pluginManager } from '../pluginManager';
 
@@ -29,7 +30,8 @@ function init(instance) {
     if (layoutManager.tv) {
         button = '';
     } else {
-        button = '<button type="button" is="paper-icon-button-light" class="playerStats-closeButton"><span class="material-icons close" aria-hidden="true"></span></button>';
+        button = '<button type="button" is="paper-icon-button-light" class="playerStats-exportButton" title="Export playback diagnostics"><span class="material-icons download" aria-hidden="true"></span></button>'
+            + '<button type="button" is="paper-icon-button-light" class="playerStats-closeButton"><span class="material-icons close" aria-hidden="true"></span></button>';
     }
 
     const contentClass = layoutManager.tv ? 'playerStats-content playerStats-content-tv' : 'playerStats-content';
@@ -40,6 +42,15 @@ function init(instance) {
 
     if (button) {
         button.addEventListener('click', onCloseButtonClick.bind(instance));
+    }
+
+    button = parent.querySelector('.playerStats-exportButton');
+    if (button) {
+        button.addEventListener('click', () => {
+            exportPlaybackDiagnostics().catch(error => {
+                console.error('[playbackDiagnostics] failed to export diagnostics:', error);
+            });
+        });
     }
 
     document.body.appendChild(parent);
