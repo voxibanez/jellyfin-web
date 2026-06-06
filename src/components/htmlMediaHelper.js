@@ -2,6 +2,10 @@ import appSettings from '../scripts/settings/appSettings' ;
 import browser from '../scripts/browser';
 import Events from '../utils/events.ts';
 import { MediaError } from 'types/mediaError';
+import {
+    recordHlsDiagnostic,
+    stopPlaybackDiagnostics
+} from './playback/playbackDiagnostics';
 
 export function getSavedVolume() {
     return appSettings.get('volume') || 1;
@@ -242,6 +246,10 @@ export function destroyHlsPlayer(instance) {
 
         instance._hlsPlayer = null;
     }
+
+    stopPlaybackDiagnostics(instance).catch(error => {
+        console.warn('[playbackDiagnostics] failed to stop diagnostics:', error);
+    });
 }
 
 export function destroyFlvPlayer(instance) {
@@ -263,6 +271,7 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
     let startupReject = reject;
 
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
+        recordHlsDiagnostic(instance, 'manifestParsed');
         playWithPromise(elem, onErrorFn).then(function () {
             resolve();
             startupReject = null;
@@ -275,6 +284,7 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
     });
 
     hls.on(Hls.Events.ERROR, function (event, data) {
+        recordHlsDiagnostic(instance, 'error', data);
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
 
         // try to recover network error
@@ -346,6 +356,18 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
                     }
                     break;
             }
+        }
+    });
+
+    [
+        [ Hls.Events.FRAG_LOADING, 'fragmentLoading' ],
+        [ Hls.Events.FRAG_LOADED, 'fragmentLoaded' ],
+        [ Hls.Events.FRAG_BUFFERED, 'fragmentBuffered' ],
+        [ Hls.Events.LEVEL_LOADING, 'levelLoading' ],
+        [ Hls.Events.LEVEL_LOADED, 'levelLoaded' ]
+    ].forEach(([ event, type ]) => {
+        if (event) {
+            hls.on(event, (_eventName, data) => recordHlsDiagnostic(instance, type, data));
         }
     });
 }

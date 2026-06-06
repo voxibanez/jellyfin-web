@@ -90,6 +90,43 @@ export function toHlsJsBufferConfig(config, highBitrate = false) {
     };
 }
 
+const DEFAULT_PLAYBACK_DIAGNOSTICS = Object.freeze({
+    enabled: true,
+    sampleIntervalMs: 1000,
+    flushIntervalMs: 30000,
+    maxRuns: 20,
+    maxAgeDays: 7,
+    maxEventsPerRun: 10000,
+    maxSamplesPerRun: 30000,
+    reportUrl: null
+});
+
+export function normalizePlaybackDiagnosticsConfig(config) {
+    const configured = config?.playbackDiagnostics || {};
+
+    return {
+        enabled: configured.enabled !== false,
+        sampleIntervalMs: positiveNumber(configured.sampleIntervalMs, DEFAULT_PLAYBACK_DIAGNOSTICS.sampleIntervalMs),
+        flushIntervalMs: positiveNumber(configured.flushIntervalMs, DEFAULT_PLAYBACK_DIAGNOSTICS.flushIntervalMs),
+        maxRuns: positiveNumber(configured.maxRuns, DEFAULT_PLAYBACK_DIAGNOSTICS.maxRuns),
+        maxAgeDays: positiveNumber(configured.maxAgeDays, DEFAULT_PLAYBACK_DIAGNOSTICS.maxAgeDays),
+        maxEventsPerRun: positiveNumber(configured.maxEventsPerRun, DEFAULT_PLAYBACK_DIAGNOSTICS.maxEventsPerRun),
+        maxSamplesPerRun: positiveNumber(configured.maxSamplesPerRun, DEFAULT_PLAYBACK_DIAGNOSTICS.maxSamplesPerRun),
+        reportUrl: typeof configured.reportUrl === 'string' && configured.reportUrl ?
+            configured.reportUrl :
+            null
+    };
+}
+
+export function getPlaybackDiagnosticsConfig() {
+    return getConfig()
+        .then(normalizePlaybackDiagnosticsConfig)
+        .catch(error => {
+            console.log('cannot get web config:', error);
+            return { ...DEFAULT_PLAYBACK_DIAGNOSTICS };
+        });
+}
+
 export function getMultiServer() {
     // Enable multi-server support when served by webpack
     if (__WEBPACK_SERVE__) {
