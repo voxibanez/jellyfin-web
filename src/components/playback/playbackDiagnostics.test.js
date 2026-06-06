@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+    combineRunWithChunks,
     getForwardBufferSeconds,
     redactUrl,
     summarizePlaybackRun
@@ -54,6 +55,34 @@ describe('playback diagnostics', () => {
             averageForwardBufferSeconds: 10,
             maximumForwardBufferSeconds: 20,
             droppedVideoFrames: 3
+        });
+    });
+
+    it('reconstructs a run from append-only diagnostic chunks', () => {
+        expect(combineRunWithChunks({
+            id: 'run-1',
+            eventCount: 2,
+            sampleCount: 2
+        }, [
+            {
+                sequence: 0,
+                events: [{ type: 'media.playing' }],
+                samples: [{ currentTime: 1 }]
+            },
+            {
+                sequence: 1,
+                events: [{ type: 'media.waiting' }],
+                samples: [{ currentTime: 2 }]
+            }
+        ])).toMatchObject({
+            events: [
+                { type: 'media.playing' },
+                { type: 'media.waiting' }
+            ],
+            samples: [
+                { currentTime: 1 },
+                { currentTime: 2 }
+            ]
         });
     });
 });
