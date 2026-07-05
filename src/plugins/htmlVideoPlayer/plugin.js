@@ -52,6 +52,13 @@ import {
     getForwardBufferSeconds,
     startPlaybackDiagnostics
 } from '../../components/playback/playbackDiagnostics';
+import toast from '../../components/toast/toast';
+import * as bitrateTest from '../../utils/bitrateTest.ts';
+import { toApi } from '../../utils/jellyfin-apiclient/compat';
+import {
+    formatBitrateMbps,
+    shouldWarnAboutPlaybackBitrate
+} from './bitrateWarning';
 import { getPlaybackBitrate } from './hlsPlaybackConfig';
 import { findActiveTrackEvent } from './subtitleTrackEvents';
 
@@ -332,6 +339,10 @@ export class HtmlVideoPlayer {
      * @type {any | undefined}
      */
     #lastProfile;
+    /**
+     * @type {string | undefined}
+     */
+    #lastBitrateWarningKey;
 
     constructor() {
         if (browser.edgeUwp) {
@@ -458,6 +469,7 @@ export class HtmlVideoPlayer {
                     getHlsBufferConfig()
                 ]);
                 const mediaBitrate = getPlaybackBitrate(options.mediaSource, url);
+                this.#warnIfPlaybackBitrateExceedsDetectedSpeed(options, mediaBitrate);
                 const highBitrate = (
                     (browser.chrome || browser.edgeChromium || browser.firefox)
                     && mediaBitrate >= hlsBuffer.highBitrateThreshold
@@ -484,6 +496,46 @@ export class HtmlVideoPlayer {
                 // This is needed in setCurrentTrackElement
                 this.#currentSrc = url;
             });
+        });
+    }
+
+    #warnIfPlaybackBitrateExceedsDetectedSpeed(options, selectedBitrate) {
+        if (options.mediaType !== 'Video' || options.playMethod !== 'Transcode') {
+            return;
+        }
+
+        if (playbackManager.enableAutomaticBitrateDetection(this)) {
+            return;
+        }
+
+        const item = options.item;
+        if (!item?.ServerId) {
+            return;
+        }
+
+        const warningKey = `${item.ServerId}-${options.playSessionId || ''}-${Math.round(selectedBitrate || 0)}`;
+        if (this.#lastBitrateWarningKey === warningKey) {
+            return;
+        }
+
+        const apiClient = ServerConnections.getApiClient(item.ServerId);
+        bitrateTest.detectBitrate(toApi(apiClient), false).then(detectedBitrate => {
+            if (!shouldWarnAboutPlaybackBitrate({
+                selectedBitrate,
+                detectedBitrate,
+                isAutomaticBitrateEnabled: playbackManager.enableAutomaticBitrateDetection(this)
+            })) {
+                return;
+            }
+
+            this.#lastBitrateWarningKey = warningKey;
+            toast(globalize.translate(
+                'MessagePlaybackBitrateExceedsDetectedSpeed',
+                formatBitrateMbps(selectedBitrate),
+                formatBitrateMbps(detectedBitrate)
+            ));
+        }).catch(error => {
+            console.warn('[htmlVideoPlayer] failed to compare playback bitrate with detected speed:', error);
         });
     }
 

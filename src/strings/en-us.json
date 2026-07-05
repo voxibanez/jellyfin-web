@@ -1194,6 +1194,7 @@
     "MessageNothingHere": "Nothing here.",
     "MessagePasswordResetForUsers": "The following users have had their passwords reset. They can now sign in with the PIN codes that were used to do the reset.",
     "MessagePlayAccessRestricted": "Playback of this content is currently restricted. Please contact your server administrator for more information.",
+    "MessagePlaybackBitrateExceedsDetectedSpeed": "Playback may buffer because the selected quality is {0} Mbps, but this client detected {1} Mbps. Switch Quality to Auto for smoother playback.",
     "MessagePleaseEnsureInternetMetadata": "Please ensure downloading of internet metadata is enabled.",
     "MessagePleaseWait": "Please wait. This may take a minute.",
     "MessagePluginConfigurationRequiresLocalAccess": "To set up this plugin please sign in to your local server directly.",
