@@ -1,0 +1,20 @@
+#!/bin/sh
+set -e
+
+if ! getent group jellyfin-log >/dev/null; then
+    addgroup --system jellyfin-log
+fi
+
+if ! getent passwd jellyfin-log >/dev/null; then
+    adduser --system --home /var/lib/jellyfin-log-collector --no-create-home \
+        --ingroup jellyfin-log --disabled-login jellyfin-log
+fi
+
+install -d -o jellyfin-log -g jellyfin-log -m 0750 /var/lib/jellyfin-log-collector/uploads
+chown -R jellyfin-log:jellyfin-log /var/lib/jellyfin-log-collector
+
+systemctl daemon-reload || true
+
+if [ "$1" = "configure" ]; then
+    systemctl enable jellyfin-log-collector.service >/dev/null 2>&1 || true
+fi

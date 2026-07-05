@@ -98,6 +98,12 @@ const DEFAULT_PLAYBACK_DIAGNOSTICS = Object.freeze({
     maxAgeDays: 7,
     maxEventsPerRun: 50000,
     maxSamplesPerRun: 30000,
+    preIncidentWindowSeconds: 10,
+    postIncidentWindowSeconds: 20,
+    maxIncidentWindows: 20,
+    maxLocalRunBytes: 20000000,
+    maxCompressedUploadBytes: 209715200,
+    uploadIncidentDiagnostics: true,
     reportUrl: null
 });
 
@@ -112,6 +118,12 @@ export function normalizePlaybackDiagnosticsConfig(config) {
         maxAgeDays: positiveNumber(configured.maxAgeDays, DEFAULT_PLAYBACK_DIAGNOSTICS.maxAgeDays),
         maxEventsPerRun: positiveNumber(configured.maxEventsPerRun, DEFAULT_PLAYBACK_DIAGNOSTICS.maxEventsPerRun),
         maxSamplesPerRun: positiveNumber(configured.maxSamplesPerRun, DEFAULT_PLAYBACK_DIAGNOSTICS.maxSamplesPerRun),
+        preIncidentWindowSeconds: positiveNumber(configured.preIncidentWindowSeconds, DEFAULT_PLAYBACK_DIAGNOSTICS.preIncidentWindowSeconds),
+        postIncidentWindowSeconds: positiveNumber(configured.postIncidentWindowSeconds, DEFAULT_PLAYBACK_DIAGNOSTICS.postIncidentWindowSeconds),
+        maxIncidentWindows: positiveNumber(configured.maxIncidentWindows, DEFAULT_PLAYBACK_DIAGNOSTICS.maxIncidentWindows),
+        maxLocalRunBytes: positiveNumber(configured.maxLocalRunBytes, DEFAULT_PLAYBACK_DIAGNOSTICS.maxLocalRunBytes),
+        maxCompressedUploadBytes: positiveNumber(configured.maxCompressedUploadBytes, DEFAULT_PLAYBACK_DIAGNOSTICS.maxCompressedUploadBytes),
+        uploadIncidentDiagnostics: configured.uploadIncidentDiagnostics !== false,
         reportUrl: typeof configured.reportUrl === 'string' && configured.reportUrl ?
             configured.reportUrl :
             null

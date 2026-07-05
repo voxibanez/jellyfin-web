@@ -1,0 +1,8 @@
+jellyfin_base_url = "https://jellyfin.motofactory.net"
+listen_addr = "127.0.0.1:8099"
+storage_dir = "/var/lib/jellyfin-log-collector/uploads"
+retention_days = 30
+max_compressed_upload_bytes = 209715200
+allowed_origins = ["https://jellyfin.motofactory.net"]
+token_ttl_seconds = 300
+hmac_secret_path = "/var/lib/jellyfin-log-collector/hmac.key"

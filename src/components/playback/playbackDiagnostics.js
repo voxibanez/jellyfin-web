@@ -5,6 +5,44 @@ const DB_VERSION = 2;
 const RUN_STORE_NAME = 'runs';
 const CHUNK_STORE_NAME = 'chunks';
 const activeRuns = new WeakMap();
+const SENSITIVE_KEY_PATTERN = /api[-_]?key|token|authorization|deviceid|password|secret|sessionid/i;
+const DANGEROUS_HLS_FIELDS = new Set([
+    'fragments',
+    'partList',
+    'url',
+    'base',
+    'relurl',
+    '_url',
+    'data',
+    '_data',
+    'loader',
+    'keyLoader',
+    'initSegment',
+    'encryptedFragments',
+    'variableList'
+]);
+const COMPACT_HLS_EVENTS = new Set([
+    'hls.fragmentLoading',
+    'hls.fragmentLoaded',
+    'hls.fragmentBuffered',
+    'hls.levelLoading',
+    'hls.levelLoaded',
+    'hls.manifestParsed'
+]);
+const INCIDENT_EVENT_TYPES = new Set([
+    'media.waiting',
+    'media.stalled',
+    'media.error',
+    'hls.error'
+]);
+
+function parseIso(value) {
+    return Date.parse(value) || 0;
+}
+
+function estimateJsonBytes(value) {
+    return new Blob([ JSON.stringify(value) ]).size;
+}
 
 function nowIso() {
     return new Date().toISOString();
@@ -29,6 +67,42 @@ export function redactUrl(value) {
     } catch {
         return value.split('?')[0].split('#')[0];
     }
+}
+
+export function sanitizeDiagnosticValue(value, depth = 0) {
+    if (value === null || value === undefined) {
+        return value ?? null;
+    }
+
+    if (typeof value === 'string') {
+        return value.includes('://') || value.includes('?') ?
+            redactUrl(value) :
+            value;
+    }
+
+    if (typeof value !== 'object') {
+        return value;
+    }
+
+    if (depth >= 4) {
+        return '[truncated]';
+    }
+
+    if (Array.isArray(value)) {
+        return value.slice(0, 20).map(item => sanitizeDiagnosticValue(item, depth + 1));
+    }
+
+    return Object.entries(value).reduce((result, [ key, item ]) => {
+        if (SENSITIVE_KEY_PATTERN.test(key)) {
+            result[key] = '[redacted]';
+        } else if (DANGEROUS_HLS_FIELDS.has(key)) {
+            result[key] = '[omitted]';
+        } else {
+            result[key] = sanitizeDiagnosticValue(item, depth + 1);
+        }
+
+        return result;
+    }, {});
 }
 
 function openDatabase() {
@@ -216,11 +290,120 @@ function mediaSample(media) {
     };
 }
 
+function compactSample(sample) {
+    return {
+        ts: sample.ts,
+        currentTime: sample.currentTime,
+        duration: sample.duration,
+        forwardBufferSeconds: sample.forwardBufferSeconds,
+        readyState: sample.readyState,
+        networkState: sample.networkState,
+        paused: sample.paused,
+        seeking: sample.seeking,
+        playbackRate: sample.playbackRate,
+        droppedVideoFrames: sample.droppedVideoFrames,
+        totalVideoFrames: sample.totalVideoFrames
+    };
+}
+
+function pushRing(buffer, entry, windowSeconds) {
+    buffer.push(entry);
+    const cutoff = parseIso(entry.ts) - (windowSeconds * 1000);
+    while (buffer.length && parseIso(buffer[0].ts) < cutoff) {
+        buffer.shift();
+    }
+}
+
+function shouldKeepCompactEvent(event) {
+    return INCIDENT_EVENT_TYPES.has(event.type)
+        || event.type === 'media.playing'
+        || event.type === 'media.canplay'
+        || event.type === 'media.pause'
+        || event.type === 'media.play'
+        || event.type === 'media.seeking'
+        || event.type === 'media.seeked'
+        || event.type === 'media.ended'
+        || event.statusCode >= 400
+        || event.fatal
+        || event.delayed;
+}
+
+function shouldKeepCompactSample(sample) {
+    return !sample.paused
+        && Number.isFinite(sample.forwardBufferSeconds)
+        && sample.forwardBufferSeconds <= 2;
+}
+
+function markIncident(state, event) {
+    if (!state.ready || state.run.incidentCount >= state.config.maxIncidentWindows) {
+        return;
+    }
+
+    const incidentAt = parseIso(event.ts);
+    const existing = state.incidentWindows.find(window => incidentAt >= window.startMs && incidentAt <= window.endMs);
+    if (existing) {
+        existing.endMs = Math.max(existing.endMs, incidentAt + (state.config.postIncidentWindowSeconds * 1000));
+        existing.triggers.push({
+            ts: event.ts,
+            type: event.type,
+            statusCode: event.statusCode ?? null,
+            details: event.details ?? null
+        });
+        return;
+    }
+
+    const window = {
+        id: createId(),
+        startMs: incidentAt - (state.config.preIncidentWindowSeconds * 1000),
+        endMs: incidentAt + (state.config.postIncidentWindowSeconds * 1000),
+        triggers: [{
+            ts: event.ts,
+            type: event.type,
+            statusCode: event.statusCode ?? null,
+            details: event.details ?? null
+        }]
+    };
+    state.incidentWindows.push(window);
+    state.run.incidentCount++;
+    state.run.hasIncident = true;
+    state.pendingEvents.push(...state.recentEvents.filter(recent => parseIso(recent.ts) >= window.startMs));
+    state.pendingSamples.push(...state.recentSamples.filter(recent => parseIso(recent.ts) >= window.startMs));
+}
+
+function shouldTriggerIncident(event) {
+    return INCIDENT_EVENT_TYPES.has(event.type)
+        || event.statusCode >= 400
+        || event.fatal
+        || event.delayed
+        || (event.type === 'hls.error' && event.details === 'bufferStalledError');
+}
+
+function recordSummaryEvent(run, event) {
+    const summary = run.summary;
+    summary.eventCounts[event.type] = (summary.eventCounts[event.type] || 0) + 1;
+
+    if (event.type === 'media.waiting') {
+        summary.waitingEvents++;
+    }
+    if (event.type === 'media.stalled') {
+        summary.stalledEvents++;
+    }
+    if (event.type === 'hls.error') {
+        summary.hlsErrors++;
+    }
+    if (event.statusCode >= 400) {
+        summary.httpErrors++;
+    }
+    if (event.delayed) {
+        summary.slowSegments++;
+    }
+}
+
 function addEvent(state, type, details = {}) {
     const event = {
         ts: nowIso(),
         type,
-        ...details
+        ...sanitizeDiagnosticValue(details)
     };
 
     if (!state.ready) {
@@ -230,18 +413,50 @@ function addEvent(state, type, details = {}) {
         return;
     }
 
-    if (state.run.eventCount >= state.config.maxEventsPerRun) {
+    pushRing(state.recentEvents, event, state.config.preIncidentWindowSeconds);
+    recordSummaryEvent(state.run, event);
+
+    if (shouldKeepCompactEvent(event) && state.run.eventCount < state.config.maxEventsPerRun) {
+        state.pendingEvents.push(event);
+        state.run.eventCount++;
+    }
+
+    if (shouldTriggerIncident(event)) {
+        markIncident(state, event);
+    }
+}
+
+function recordSample(state, sample) {
+    if (!state.ready) {
         return;
     }
 
-    state.pendingEvents.push(event);
-    state.run.eventCount++;
+    const compact = compactSample(sample);
+    pushRing(state.recentSamples, compact, state.config.preIncidentWindowSeconds);
+    updateSampleSummary(state.run, compact);
+
+    if (shouldKeepCompactSample(compact) && state.run.sampleCount < state.config.maxSamplesPerRun) {
+        state.pendingSamples.push(compact);
+        state.run.sampleCount++;
+    }
+
+    if (
+        !compact.paused
+        && !compact.seeking
+        && Number.isFinite(compact.forwardBufferSeconds)
+        && compact.forwardBufferSeconds < 1
+    ) {
+        markIncident(state, {
+            ...compact,
+            type: 'sample.lowBuffer'
+        });
+    }
 }
 
 function hlsEventDetails(data = {}) {
     const stats = data.stats || data.frag?.stats || {};
 
-    return {
+    const details = {
         fatal: !!data.fatal,
         errorType: data.type || null,
         details: data.details || null,
@@ -258,6 +473,17 @@ function hlsEventDetails(data = {}) {
         retryAction: data.errorAction?.action ?? null,
         retryCount: data.errorAction?.retryCount ?? null
     };
+
+    const loadSeconds = Number.isFinite(details.loadStartMs) && Number.isFinite(details.loadEndMs) ?
+        (details.loadEndMs - details.loadStartMs) / 1000 :
+        null;
+    details.loadSeconds = loadSeconds;
+    details.delayed = Number.isFinite(loadSeconds)
+        && Number.isFinite(details.duration)
+        && details.duration > 0
+        && loadSeconds > details.duration;
+
+    return details;
 }
 
 function metadata(instance, transport) {
@@ -266,6 +492,7 @@ function metadata(instance, transport) {
 
     return {
         transport,
+        serverId: options.item?.ServerId || null,
         itemId: options.item?.Id || null,
         itemName: options.item?.Name || null,
         mediaSourceId: mediaSource.Id || null,
@@ -273,8 +500,53 @@ function metadata(instance, transport) {
         playSessionId: options.playSessionId || null,
         container: mediaSource.Container || null,
         url: redactUrl(options.url),
-        userAgent: globalThis.navigator?.userAgent || null
+        userAgent: globalThis.navigator?.userAgent || null,
+        selectedBitrate: options.maxBitrate || null
     };
+}
+
+function createSummary() {
+    return {
+        eventCounts: {},
+        waitingEvents: 0,
+        stalledEvents: 0,
+        hlsErrors: 0,
+        httpErrors: 0,
+        slowSegments: 0,
+        samples: 0,
+        minimumForwardBufferSeconds: null,
+        averageForwardBufferSeconds: null,
+        maximumForwardBufferSeconds: null,
+        firstDroppedVideoFrames: null,
+        lastDroppedVideoFrames: null,
+        droppedVideoFrames: null,
+        estimatedBytes: 0
+    };
+}
+
+function updateSampleSummary(run, sample) {
+    const summary = run.summary;
+    summary.samples++;
+
+    if (Number.isFinite(sample.forwardBufferSeconds)) {
+        summary.minimumForwardBufferSeconds = summary.minimumForwardBufferSeconds === null ?
+            sample.forwardBufferSeconds :
+            Math.min(summary.minimumForwardBufferSeconds, sample.forwardBufferSeconds);
+        summary.maximumForwardBufferSeconds = summary.maximumForwardBufferSeconds === null ?
+            sample.forwardBufferSeconds :
+            Math.max(summary.maximumForwardBufferSeconds, sample.forwardBufferSeconds);
+
+        const previousAverage = summary.averageForwardBufferSeconds || 0;
+        summary.averageForwardBufferSeconds = previousAverage + ((sample.forwardBufferSeconds - previousAverage) / summary.samples);
+    }
+
+    if (Number.isFinite(sample.droppedVideoFrames)) {
+        if (summary.firstDroppedVideoFrames === null) {
+            summary.firstDroppedVideoFrames = sample.droppedVideoFrames;
+        }
+        summary.lastDroppedVideoFrames = sample.droppedVideoFrames;
+        summary.droppedVideoFrames = Math.max(0, summary.lastDroppedVideoFrames - summary.firstDroppedVideoFrames);
+    }
 }
 
 export function combineRunWithChunks(run, chunks) {
@@ -301,18 +573,80 @@ async function loadCompleteRun(run) {
     return combineRunWithChunks(run, await getRunChunks(run.id));
 }
 
+function trimTrailingSlashes(value) {
+    let end = value.length;
+
+    while (end > 0 && value[end - 1] === '/') {
+        end--;
+    }
+
+    return value.slice(0, end);
+}
+
 async function reportRun(run, config) {
-    if (!config.reportUrl) {
+    if (!config.reportUrl || !config.uploadIncidentDiagnostics || !run.hasIncident) {
         return;
     }
 
     try {
-        await fetch(config.reportUrl, {
+        const { ServerConnections } = await import('../../lib/jellyfin-apiclient');
+        const authorizationHeader = run.metadata?.serverId ?
+            ServerConnections.getApiClient(run.metadata.serverId)?.authorizationHeader :
+            ServerConnections.currentApiClient()?.authorizationHeader;
+
+        if (!authorizationHeader) {
+            throw new Error('missing Jellyfin authorization header');
+        }
+
+        const reportBaseUrl = trimTrailingSlashes(config.reportUrl);
+        const initResponse = await fetch(`${reportBaseUrl}/v1/uploads/init`, {
             method: 'POST',
             credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(run)
+            headers: {
+                'Authorization': authorizationHeader,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                runId: run.id,
+                itemId: run.metadata?.itemId || null,
+                playSessionId: run.metadata?.playSessionId || null,
+                startedAt: run.startedAt,
+                endedAt: run.endedAt
+            })
         });
+
+        if (!initResponse.ok) {
+            throw new Error(`upload init failed: ${initResponse.status}`);
+        }
+
+        const upload = await initResponse.json();
+        const payload = new Blob([ JSON.stringify(sanitizeDiagnosticValue(run)) ], { type: 'application/json' });
+        const CompressionStreamCtor = globalThis['CompressionStream'];
+        const compressed = typeof CompressionStreamCtor === 'function' ?
+            await new Response(payload.stream().pipeThrough(new CompressionStreamCtor('gzip'))).blob() :
+            payload;
+
+        if (compressed.size > config.maxCompressedUploadBytes) {
+            throw new Error(`diagnostics upload exceeds ${config.maxCompressedUploadBytes} bytes`);
+        }
+
+        const fallbackUploadPath = `/v1/uploads/${upload.uploadId}`;
+        const uploadPath = upload.uploadUrl || fallbackUploadPath;
+        const uploadUrl = uploadPath.startsWith('http') ? uploadPath : `${reportBaseUrl}${uploadPath}`;
+        const uploadResponse = await fetch(uploadUrl, {
+            method: 'POST',
+            credentials: 'omit',
+            headers: {
+                'Authorization': `Bearer ${upload.token}`,
+                'Content-Type': 'application/json',
+                'Content-Encoding': compressed === payload ? 'identity' : 'gzip'
+            },
+            body: compressed
+        });
+
+        if (!uploadResponse.ok) {
+            throw new Error(`upload failed: ${uploadResponse.status}`);
+        }
     } catch (error) {
         console.warn('[playbackDiagnostics] failed to report diagnostics:', error);
     }
@@ -330,6 +664,13 @@ function flushPlaybackDiagnostics(state) {
         try {
             if (events.length || samples.length) {
                 const sequence = state.nextChunkSequence;
+                const estimatedBytes = estimateJsonBytes({ events, samples });
+                if (state.run.summary.estimatedBytes + estimatedBytes > state.config.maxLocalRunBytes) {
+                    state.run.summary.truncated = true;
+                    return persistRun(state.run);
+                }
+
+                state.run.summary.estimatedBytes += estimatedBytes;
                 await persistChunkAndRun({
                     id: `${state.run.id}:${sequence}`,
                     runId: state.run.id,
@@ -370,7 +711,10 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         flushPromise: Promise.resolve(),
         sampleTimer: null,
         flushTimer: null,
-        mediaListeners: []
+        mediaListeners: [],
+        recentEvents: [],
+        recentSamples: [],
+        incidentWindows: []
     };
     activeRuns.set(instance, state);
 
@@ -393,7 +737,11 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         status: 'active',
         metadata: metadata(instance, transport),
         eventCount: 0,
-        sampleCount: 0
+        sampleCount: 0,
+        incidentCount: 0,
+        hasIncident: false,
+        incidentWindows: [],
+        summary: createSummary()
     };
     state.ready = true;
     state.pendingEvents = state.pendingEvents.slice(0, config.maxEventsPerRun);
@@ -409,12 +757,7 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         state.mediaListeners.push({ type, listener });
     });
 
-    const sample = () => {
-        if (state.run.sampleCount < config.maxSamplesPerRun) {
-            state.pendingSamples.push(mediaSample(media));
-            state.run.sampleCount++;
-        }
-    };
+    const sample = () => recordSample(state, mediaSample(media));
     sample();
     state.sampleTimer = setInterval(sample, config.sampleIntervalMs);
     state.flushTimer = setInterval(() => flushPlaybackDiagnostics(state), config.flushIntervalMs);
@@ -426,7 +769,10 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
 export function recordHlsDiagnostic(instance, type, data) {
     const state = activeRuns.get(instance);
     if (state) {
-        addEvent(state, `hls.${type}`, hlsEventDetails(data));
+        const eventType = `hls.${type}`;
+        if (COMPACT_HLS_EVENTS.has(eventType) || eventType === 'hls.error') {
+            addEvent(state, eventType, hlsEventDetails(data));
+        }
     }
 }
 
@@ -454,18 +800,23 @@ export function summarizePlaybackRun(run) {
         }
     });
 
-    return {
+    const summary = {
+        ...(run.summary || {}),
         waitingEvents: run.events.filter(event => event.type === 'media.waiting').length,
         stalledEvents: run.events.filter(event => event.type === 'media.stalled').length,
         hlsErrors: run.events.filter(event => event.type === 'hls.error').length,
         httpErrors: run.events.filter(event => event.type === 'hls.error' && event.statusCode >= 400).length,
-        minimumForwardBufferSeconds: bufferCount ? bufferMinimum : null,
-        averageForwardBufferSeconds: bufferCount ? bufferTotal / bufferCount : null,
-        maximumForwardBufferSeconds: bufferCount ? bufferMaximum : null,
+        minimumForwardBufferSeconds: bufferCount ? bufferMinimum : run.summary?.minimumForwardBufferSeconds ?? null,
+        averageForwardBufferSeconds: bufferCount ? bufferTotal / bufferCount : run.summary?.averageForwardBufferSeconds ?? null,
+        maximumForwardBufferSeconds: bufferCount ? bufferMaximum : run.summary?.maximumForwardBufferSeconds ?? null,
         droppedVideoFrames: firstDroppedFrames !== null && lastDroppedFrames !== null ?
             Math.max(0, lastDroppedFrames - firstDroppedFrames) :
-            null
+            run.summary?.droppedVideoFrames ?? null
     };
+
+    delete summary.firstDroppedVideoFrames;
+    delete summary.lastDroppedVideoFrames;
+    return summary;
 }
 
 export async function stopPlaybackDiagnostics(instance, media, status = 'stopped') {
@@ -489,6 +840,12 @@ export async function stopPlaybackDiagnostics(instance, media, status = 'stopped
 
     state.run.status = status;
     state.run.endedAt = nowIso();
+    state.run.incidentWindows = state.incidentWindows.map(window => ({
+        id: window.id,
+        startedAt: new Date(window.startMs).toISOString(),
+        endedAt: new Date(window.endMs).toISOString(),
+        triggers: window.triggers
+    }));
     await flushPlaybackDiagnostics(state);
     const completeRun = await loadCompleteRun(state.run);
     state.run.summary = summarizePlaybackRun(completeRun);
