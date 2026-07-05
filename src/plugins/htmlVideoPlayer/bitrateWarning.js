@@ -10,8 +10,3 @@ export function shouldWarnAboutPlaybackBitrate({
         && detectedBitrate > 0
         && selectedBitrate > detectedBitrate;
 }
-
-export function formatBitrateMbps(bitrate) {
-    const mbps = bitrate / 1000000;
-    return mbps >= 10 ? mbps.toFixed(0) : mbps.toFixed(1);
-}

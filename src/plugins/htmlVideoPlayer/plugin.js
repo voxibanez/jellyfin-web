@@ -17,6 +17,7 @@ import loading from '../../components/loading/loading';
 import dom from '../../utils/dom';
 import { playbackManager } from '../../components/playback/playbackmanager';
 import { appRouter } from '../../components/router/appRouter';
+import dialog from '../../components/dialog/dialog';
 import {
     bindEventsToHlsPlayer,
     destroyHlsPlayer,
@@ -52,13 +53,9 @@ import {
     getForwardBufferSeconds,
     startPlaybackDiagnostics
 } from '../../components/playback/playbackDiagnostics';
-import toast from '../../components/toast/toast';
 import * as bitrateTest from '../../utils/bitrateTest.ts';
 import { toApi } from '../../utils/jellyfin-apiclient/compat';
-import {
-    formatBitrateMbps,
-    shouldWarnAboutPlaybackBitrate
-} from './bitrateWarning';
+import { shouldWarnAboutPlaybackBitrate } from './bitrateWarning';
 import { getPlaybackBitrate } from './hlsPlaybackConfig';
 import { findActiveTrackEvent } from './subtitleTrackEvents';
 
@@ -528,15 +525,36 @@ export class HtmlVideoPlayer {
                 return;
             }
 
-            this.#lastBitrateWarningKey = warningKey;
-            toast(globalize.translate(
-                'MessagePlaybackBitrateExceedsDetectedSpeed',
-                formatBitrateMbps(selectedBitrate),
-                formatBitrateMbps(detectedBitrate)
-            ));
+            this.#showBitrateWarning(warningKey);
         }).catch(error => {
             console.warn('[htmlVideoPlayer] failed to compare playback bitrate with detected speed:', error);
         });
+    }
+
+    #showBitrateWarning(warningKey) {
+        this.#lastBitrateWarningKey = warningKey;
+
+        appRouter.ready()
+            .then(() => dialog.show({
+                title: globalize.translate('HeaderPlaybackBitrateExceedsDetectedSpeed'),
+                text: globalize.translate('MessagePlaybackBitrateExceedsDetectedSpeed'),
+                buttons: [{
+                    name: globalize.translate('ButtonSwitchToAutoBitrate'),
+                    id: 'auto',
+                    type: 'submit'
+                }]
+            }))
+            .then(result => {
+                if (result === 'auto') {
+                    playbackManager.setMaxStreamingBitrate({
+                        enableAutomaticBitrateDetection: true,
+                        maxBitrate: 0
+                    }, this);
+                }
+            })
+            .catch(() => {
+                // Dialog was closed without choosing the action.
+            });
     }
 
     /**

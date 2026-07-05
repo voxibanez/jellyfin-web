@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-    formatBitrateMbps,
-    shouldWarnAboutPlaybackBitrate
-} from './bitrateWarning';
+import { shouldWarnAboutPlaybackBitrate } from './bitrateWarning';
 
 describe('playback bitrate warning', () => {
     it('warns when manually selected playback bitrate exceeds detected speed', () => {
@@ -28,10 +25,5 @@ describe('playback bitrate warning', () => {
             detectedBitrate: 7000000,
             isAutomaticBitrateEnabled: false
         })).toBe(false);
-    });
-
-    it('formats bitrate values for display', () => {
-        expect(formatBitrateMbps(7250000)).toBe('7.3');
-        expect(formatBitrateMbps(39616000)).toBe('40');
     });
 });
