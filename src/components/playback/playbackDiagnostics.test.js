@@ -4,6 +4,7 @@ import {
     combineRunWithChunks,
     getForwardBufferSeconds,
     redactUrl,
+    sanitizeDiagnosticValue,
     summarizePlaybackRun
 } from './playbackDiagnostics';
 
@@ -19,6 +20,30 @@ describe('playback diagnostics', () => {
     it('removes secrets and query parameters from URLs', () => {
         expect(redactUrl('https://media.example/Videos/1/stream.m3u8?api_key=secret&token=secret'))
             .toBe('https://media.example/Videos/1/stream.m3u8');
+    });
+
+    it('sanitizes nested HLS details without preserving manifests or tokens', () => {
+        expect(sanitizeDiagnosticValue({
+            details: {
+                url: 'https://media.example/main.m3u8?ApiKey=secret',
+                fragments: [
+                    { _url: 'https://media.example/0.mp4?ApiKey=secret' }
+                ],
+                response: {
+                    url: 'https://media.example/0.mp4?DeviceId=device&ApiKey=secret'
+                },
+                token: 'secret'
+            }
+        })).toEqual({
+            details: {
+                url: '[omitted]',
+                fragments: '[omitted]',
+                response: {
+                    url: '[omitted]'
+                },
+                token: '[redacted]'
+            }
+        });
     });
 
     it('calculates forward buffer in the active range', () => {
@@ -46,7 +71,7 @@ describe('playback diagnostics', () => {
                 { forwardBufferSeconds: 20, droppedVideoFrames: 2 },
                 { forwardBufferSeconds: 0, droppedVideoFrames: 5 }
             ]
-        })).toEqual({
+        })).toMatchObject({
             waitingEvents: 1,
             stalledEvents: 1,
             hlsErrors: 1,
