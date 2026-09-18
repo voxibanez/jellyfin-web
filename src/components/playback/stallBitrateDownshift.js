@@ -57,14 +57,13 @@ export function createStallDownshiftController({
     throughputSamples = 8
 } = {}) {
     let stalls = [];
-    let lastDownshiftAt = 0;
     let lastChangeAt = 0;
     let stableSince = 0;
-    let throughputs = [];
+    const throughputs = [];
 
     return {
         recordFragThroughput({ loadedBytes, loadSeconds }) {
-            if (!(loadedBytes > 0) || !(loadSeconds > 0)) {
+            if (loadedBytes <= 0 || loadSeconds <= 0) {
                 return;
             }
 
@@ -101,7 +100,6 @@ export function createStallDownshiftController({
         },
 
         markChanged(now = Date.now()) {
-            lastDownshiftAt = now;
             lastChangeAt = now;
             stalls = [];
             stableSince = 0;
@@ -113,7 +111,7 @@ export function createStallDownshiftController({
         },
 
         noteHealthyBuffer(forwardBufferSeconds, now = Date.now()) {
-            if (!(forwardBufferSeconds >= upshiftMinBufferSeconds)) {
+            if (forwardBufferSeconds < upshiftMinBufferSeconds) {
                 stableSince = 0;
                 return;
             }

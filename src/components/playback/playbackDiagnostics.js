@@ -789,7 +789,7 @@ export function recordHlsDiagnostic(instance, type, data) {
     // Healthy fragment/level chatter: counters + pre-incident ring only (no IndexedDB).
     const noisy = eventType !== 'hls.error'
         && !details.delayed
-        && !(details.statusCode >= 400)
+        && (details.statusCode == null || details.statusCode < 400)
         && !details.fatal;
 
     if (noisy) {

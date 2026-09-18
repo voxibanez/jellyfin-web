@@ -1447,7 +1447,7 @@ export class PlaybackManager {
         // Does not rewrite the user's saved Auto/max bitrate preference.
         self.downshiftStreamingBitrate = function (player, bitrate) {
             player = player || self._currentPlayer;
-            if (!player || !(bitrate > 0)) {
+            if (!player || !Number.isFinite(bitrate) || bitrate <= 0) {
                 return;
             }
 
