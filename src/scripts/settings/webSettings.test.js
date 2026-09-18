@@ -12,8 +12,8 @@ describe('HLS buffer configuration', () => {
             maxBufferLength: 45,
             highBitrateMaxBufferLength: 15,
             highBitrateThreshold: 25_000_000,
-            maxMaxBufferLength: 120,
-            maxBufferSize: 128 * 1024 * 1024,
+            maxMaxBufferLength: 90,
+            maxBufferSize: 96 * 1024 * 1024,
             backBufferLength: 30
         });
     });
@@ -51,7 +51,7 @@ describe('HLS buffer configuration', () => {
             highBitrateMaxBufferLength: 15,
             highBitrateThreshold: 25_000_000,
             maxMaxBufferLength: 180,
-            maxBufferSize: 128 * 1024 * 1024,
+            maxBufferSize: 96 * 1024 * 1024,
             backBufferLength: 30
         });
     });
@@ -61,8 +61,26 @@ describe('HLS buffer configuration', () => {
 
         expect(toHlsJsBufferConfig(config, true)).toEqual({
             maxBufferLength: 15,
-            maxMaxBufferLength: 120,
-            maxBufferSize: 128 * 1024 * 1024,
+            maxMaxBufferLength: 90,
+            maxBufferSize: 96 * 1024 * 1024,
+            backBufferLength: 30
+        });
+    });
+
+    it('caps buffer time so the stream fits the byte budget', () => {
+        const config = normalizeHlsBufferConfig({
+            hlsBuffer: {
+                maxBufferLength: 45,
+                maxMaxBufferLength: 90,
+                maxBufferSize: 96 * 1024 * 1024
+            }
+        });
+
+        // 50 Mbps => 96 MiB holds ~16s
+        expect(toHlsJsBufferConfig(config, false, 50_000_000)).toEqual({
+            maxBufferLength: 16,
+            maxMaxBufferLength: 16,
+            maxBufferSize: 96 * 1024 * 1024,
             backBufferLength: 30
         });
     });

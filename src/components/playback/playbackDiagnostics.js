@@ -501,7 +501,7 @@ function metadata(instance, transport) {
         container: mediaSource.Container || null,
         url: redactUrl(options.url),
         userAgent: globalThis.navigator?.userAgent || null,
-        selectedBitrate: options.maxBitrate || null
+        selectedBitrate: options.maxBitrate || mediaSource.Bitrate || null
     };
 }
 
@@ -513,6 +513,9 @@ function createSummary() {
         hlsErrors: 0,
         httpErrors: 0,
         slowSegments: 0,
+        fragmentsLoaded: 0,
+        fragRetries: 0,
+        fragRetryRecoveries: 0,
         samples: 0,
         minimumForwardBufferSeconds: null,
         averageForwardBufferSeconds: null,
@@ -661,27 +664,28 @@ function flushPlaybackDiagnostics(state) {
         const events = state.pendingEvents.splice(0);
         const samples = state.pendingSamples.splice(0);
 
-        try {
-            if (events.length || samples.length) {
-                const sequence = state.nextChunkSequence;
-                const estimatedBytes = estimateJsonBytes({ events, samples });
-                if (state.run.summary.estimatedBytes + estimatedBytes > state.config.maxLocalRunBytes) {
-                    state.run.summary.truncated = true;
-                    return persistRun(state.run);
-                }
+        // Healthy playback: keep counters in memory; skip empty IndexedDB rewrites.
+        if (!events.length && !samples.length) {
+            return;
+        }
 
-                state.run.summary.estimatedBytes += estimatedBytes;
-                await persistChunkAndRun({
-                    id: `${state.run.id}:${sequence}`,
-                    runId: state.run.id,
-                    sequence,
-                    events,
-                    samples
-                }, state.run);
-                state.nextChunkSequence++;
-            } else {
-                await persistRun(state.run);
+        try {
+            const sequence = state.nextChunkSequence;
+            const estimatedBytes = estimateJsonBytes({ events, samples });
+            if (state.run.summary.estimatedBytes + estimatedBytes > state.config.maxLocalRunBytes) {
+                state.run.summary.truncated = true;
+                return persistRun(state.run);
             }
+
+            state.run.summary.estimatedBytes += estimatedBytes;
+            await persistChunkAndRun({
+                id: `${state.run.id}:${sequence}`,
+                runId: state.run.id,
+                sequence,
+                events,
+                samples
+            }, state.run);
+            state.nextChunkSequence++;
         } catch (error) {
             state.pendingEvents.unshift(...events);
             state.pendingSamples.unshift(...samples);
@@ -714,7 +718,9 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
         mediaListeners: [],
         recentEvents: [],
         recentSamples: [],
-        incidentWindows: []
+        incidentWindows: [],
+        lastFragAttempt: null,
+        pendingFragRetry: null
     };
     activeRuns.set(instance, state);
 
@@ -768,11 +774,66 @@ export async function startPlaybackDiagnostics(instance, media, transport = 'med
 
 export function recordHlsDiagnostic(instance, type, data) {
     const state = activeRuns.get(instance);
-    if (state) {
-        const eventType = `hls.${type}`;
-        if (COMPACT_HLS_EVENTS.has(eventType) || eventType === 'hls.error') {
-            addEvent(state, eventType, hlsEventDetails(data));
+    if (!state) {
+        return;
+    }
+
+    const eventType = `hls.${type}`;
+    if (!COMPACT_HLS_EVENTS.has(eventType) && eventType !== 'hls.error') {
+        return;
+    }
+
+    const details = hlsEventDetails(data);
+    trackFragRetryTelemetry(state, eventType, details);
+
+    // Healthy fragment/level chatter: counters + pre-incident ring only (no IndexedDB).
+    const noisy = eventType !== 'hls.error'
+        && !details.delayed
+        && !(details.statusCode >= 400)
+        && !details.fatal;
+
+    if (noisy) {
+        if (state.ready) {
+            state.run.summary.eventCounts[eventType] = (state.run.summary.eventCounts[eventType] || 0) + 1;
+            pushRing(state.recentEvents, {
+                ts: nowIso(),
+                type: eventType,
+                fragment: details.fragment,
+                loadSeconds: details.loadSeconds,
+                delayed: details.delayed
+            }, state.config.preIncidentWindowSeconds);
         }
+        return;
+    }
+
+    addEvent(state, eventType, details);
+}
+
+function trackFragRetryTelemetry(state, eventType, details) {
+    if (!state.ready) {
+        return;
+    }
+
+    if (eventType === 'hls.fragmentLoaded') {
+        state.run.summary.fragmentsLoaded++;
+        if (state.pendingFragRetry === details.fragment) {
+            state.run.summary.fragRetryRecoveries++;
+            state.pendingFragRetry = null;
+        }
+        return;
+    }
+
+    if (eventType === 'hls.fragmentLoading' && details.fragment != null) {
+        if (state.lastFragAttempt === details.fragment) {
+            state.run.summary.fragRetries++;
+            state.pendingFragRetry = details.fragment;
+        }
+        state.lastFragAttempt = details.fragment;
+        return;
+    }
+
+    if (eventType === 'hls.error' && !details.fatal && details.statusCode >= 400) {
+        state.run.summary.fragRetries++;
     }
 }
 

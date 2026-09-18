@@ -58,6 +58,7 @@ import { toApi } from '../../utils/jellyfin-apiclient/compat';
 import { shouldWarnAboutPlaybackBitrate } from './bitrateWarning';
 import { getPlaybackBitrate } from './hlsPlaybackConfig';
 import { findActiveTrackEvent } from './subtitleTrackEvents';
+import { createStallDownshiftController } from '../../components/playback/stallBitrateDownshift';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -392,6 +393,18 @@ export class HtmlVideoPlayer {
      * @type {string | undefined}
      */
     #lastBitrateWarningKey;
+    /**
+     * @type {ReturnType<typeof createStallDownshiftController> | undefined}
+     */
+    #stallDownshift;
+    /**
+     * @type {number}
+     */
+    #playbackBitrate = 0;
+    /**
+     * @type {number}
+     */
+    #hlsLevelCount = 0;
 
     constructor() {
         if (browser.edgeUwp) {
@@ -583,13 +596,37 @@ export class HtmlVideoPlayer {
                     (browser.chrome || browser.edgeChromium || browser.firefox)
                     && mediaBitrate >= hlsBuffer.highBitrateThreshold
                 );
-                const hlsConfig = toHlsJsBufferConfig(hlsBuffer, highBitrate);
+                const hlsConfig = toHlsJsBufferConfig(hlsBuffer, highBitrate, mediaBitrate);
+                this.#stallDownshift = createStallDownshiftController();
+                this.#playbackBitrate = mediaBitrate;
+                this.#hlsLevelCount = 0;
+                // Preserve session-cap recovery after restream: allow upshift once buffer is healthy again.
+                if (playbackManager.getSessionStreamingBitrate?.(this)) {
+                    this.#stallDownshift.markChanged(Date.now() - 60_000);
+                }
 
                 const hls = new Hls({
                     startPosition: options.playerStartPositionTicks / 10000000,
                     manifestLoadingTimeOut: 20000,
                     ...hlsConfig,
                     capLevelOnFPSDrop: true,
+                    // Let transient segment HTTP errors retry before we destroy the player.
+                    fragLoadPolicy: {
+                        default: {
+                            maxTimeToFirstByteMs: 10000,
+                            maxLoadTimeMs: 120000,
+                            timeoutRetry: {
+                                maxNumRetry: 3,
+                                retryDelayMs: 1000,
+                                maxRetryDelayMs: 8000
+                            },
+                            errorRetry: {
+                                maxNumRetry: 4,
+                                retryDelayMs: 1000,
+                                maxRetryDelayMs: 8000
+                            }
+                        }
+                    },
                     videoPreference: { preferHDR: true },
                     xhrSetup(xhr) {
                         xhr.withCredentials = includeCorsCredentials;
@@ -598,7 +635,19 @@ export class HtmlVideoPlayer {
                 hls.loadSource(url);
                 hls.attachMedia(elem);
 
-                bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject);
+                bindEventsToHlsPlayer(this, hls, elem, this.onError, resolve, reject, {
+                    onBufferStall: () => this.#downshiftAfterSustainedStalls(),
+                    onFragLoaded: (info) => {
+                        this.#stallDownshift?.recordFragThroughput(info);
+                        if (info.levels) {
+                            this.#hlsLevelCount = info.levels;
+                        }
+                        this.#maybeUpshiftBitrate();
+                    },
+                    onManifestParsed: ({ levels }) => {
+                        this.#hlsLevelCount = levels || 0;
+                    }
+                });
 
                 this._hlsPlayer = hls;
 
@@ -606,6 +655,69 @@ export class HtmlVideoPlayer {
                 this.#currentSrc = url;
             });
         });
+    }
+
+    #downshiftAfterSustainedStalls() {
+        if (!playbackManager.enableAutomaticBitrateDetection(this)) {
+            return;
+        }
+
+        if (playbackManager.isChangingStream?.(this)) {
+            return;
+        }
+
+        const controller = this.#stallDownshift;
+        if (!controller?.shouldDownshift()) {
+            return;
+        }
+
+        const currentBitrate = Math.min(
+            playbackManager.getMaxStreamingBitrate(this) || Number.POSITIVE_INFINITY,
+            this.#playbackBitrate || playbackManager.getMaxStreamingBitrate(this) || 0
+        );
+        const nextBitrate = controller.nextBitrate(currentBitrate);
+        if (!nextBitrate) {
+            return;
+        }
+
+        controller.markChanged();
+        console.warn(`[htmlVideoPlayer] sustained buffer stalls; downshifting Auto bitrate to ${nextBitrate}`);
+        playbackManager.downshiftStreamingBitrate(this, nextBitrate);
+    }
+
+    #maybeUpshiftBitrate() {
+        if (!playbackManager.enableAutomaticBitrateDetection(this)) {
+            return;
+        }
+
+        if (playbackManager.isChangingStream?.(this)) {
+            return;
+        }
+
+        const sessionBitrate = playbackManager.getSessionStreamingBitrate?.(this);
+        if (!sessionBitrate) {
+            return;
+        }
+
+        const mediaElement = this.#mediaElement;
+        const forwardBuffer = mediaElement ? getForwardBufferSeconds(mediaElement) : 0;
+        const controller = this.#stallDownshift;
+        controller?.noteHealthyBuffer(forwardBuffer);
+
+        const ceiling = playbackManager.getSavedMaxStreamingBitrate?.(this)
+            || playbackManager.getMaxStreamingBitrate(this);
+        if (!controller?.shouldUpshift(sessionBitrate, ceiling)) {
+            return;
+        }
+
+        const nextBitrate = controller.nextUpshiftBitrate(sessionBitrate, ceiling);
+        if (!nextBitrate) {
+            return;
+        }
+
+        controller.markChanged();
+        console.info(`[htmlVideoPlayer] buffer healthy; upshifting Auto bitrate to ${nextBitrate}`);
+        playbackManager.downshiftStreamingBitrate(this, nextBitrate);
     }
 
     #warnIfPlaybackBitrateExceedsDetectedSpeed(options, selectedBitrate) {
@@ -2477,6 +2589,29 @@ export class HtmlVideoPlayer {
             label: 'Forward buffer',
             value: `${getForwardBufferSeconds(mediaElement).toFixed(1)} s`
         });
+
+        const sessionBitrate = playbackManager.getSessionStreamingBitrate?.(this);
+        if (sessionBitrate) {
+            videoCategory.stats.push({
+                label: globalize.translate('LabelSessionBitrate'),
+                value: `${(sessionBitrate / 1000000).toFixed(1)} Mbps`
+            });
+        }
+
+        if (this.#hlsLevelCount) {
+            videoCategory.stats.push({
+                label: globalize.translate('LabelHlsLevels'),
+                value: String(this.#hlsLevelCount)
+            });
+        }
+
+        const throughput = this.#stallDownshift?.estimatedThroughput?.();
+        if (throughput > 0) {
+            videoCategory.stats.push({
+                label: 'Measured throughput',
+                value: `${(throughput / 1000000).toFixed(1)} Mbps`
+            });
+        }
 
         const devicePixelRatio = window.devicePixelRatio || 1;
         const rect = mediaElement.getBoundingClientRect ? mediaElement.getBoundingClientRect() : {};
