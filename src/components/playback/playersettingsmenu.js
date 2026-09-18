@@ -118,6 +118,12 @@ function getQualitySecondaryText(player) {
 
     selectedOption = selectedOption[0];
     let text = selectedOption.name;
+    const sessionBitrate = playbackManager.getSessionStreamingBitrate?.(player);
+
+    if (sessionBitrate && playbackManager.enableAutomaticBitrateDetection(player)) {
+        const mbps = (sessionBitrate / 1000000).toFixed(sessionBitrate >= 1000000 ? 0 : 1);
+        return globalize.translate('ValueAutoBitrateReduced', `${mbps} Mbps`);
+    }
 
     if (selectedOption.autoText) {
         if (state.PlayState && state.PlayState.PlayMethod !== 'Transcode') {

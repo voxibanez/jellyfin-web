@@ -13,10 +13,28 @@ import {
 } from '../../scripts/settings/webSettings';
 import Events from '../../utils/events.ts';
 import { startPlaybackDiagnostics } from '../../components/playback/playbackDiagnostics';
+import { getPlaybackBitrate } from '../htmlVideoPlayer/hlsPlaybackConfig';
 
 function getDefaultProfile() {
     return profileBuilder({});
 }
+
+const HLS_FRAG_LOAD_POLICY = {
+    default: {
+        maxTimeToFirstByteMs: 10000,
+        maxLoadTimeMs: 120000,
+        timeoutRetry: {
+            maxNumRetry: 3,
+            retryDelayMs: 1000,
+            maxRetryDelayMs: 8000
+        },
+        errorRetry: {
+            maxNumRetry: 4,
+            retryDelayMs: 1000,
+            maxRetryDelayMs: 8000
+        }
+    }
+};
 
 let fadeTimeout;
 function fade(instance, elem, startingVolume) {
@@ -194,11 +212,17 @@ class HtmlAudioPlayer {
                             getIncludeCorsCredentials(),
                             getHlsBufferConfig()
                         ]);
-                        const hlsConfig = toHlsJsBufferConfig(hlsBuffer);
+                        const mediaBitrate = getPlaybackBitrate(options.mediaSource, val);
+                        const highBitrate = (
+                            (browser.chrome || browser.edgeChromium || browser.firefox)
+                            && mediaBitrate >= hlsBuffer.highBitrateThreshold
+                        );
+                        const hlsConfig = toHlsJsBufferConfig(hlsBuffer, highBitrate, mediaBitrate);
 
                         const hls = new Hls({
                             manifestLoadingTimeOut: 20000,
                             ...hlsConfig,
+                            fragLoadPolicy: HLS_FRAG_LOAD_POLICY,
                             xhrSetup: function (xhr) {
                                 xhr.withCredentials = includeCorsCredentials;
                             }

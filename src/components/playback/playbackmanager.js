@@ -1433,12 +1433,60 @@ export class PlaybackManager {
 
                 promise.then(function (bitrate) {
                     appSettings.maxStreamingBitrate(endpointInfo.IsInNetwork, mediaType, bitrate);
+                    delete playerData.sessionStreamingBitrate;
+                    delete playerData.maxStreamingBitrate;
 
                     changeStream(player, getCurrentTicks(player), {
                         MaxStreamingBitrate: bitrate
                     });
                 });
             });
+        };
+
+        // Session-only quality change for Auto ABR ladder.
+        // Does not rewrite the user's saved Auto/max bitrate preference.
+        self.downshiftStreamingBitrate = function (player, bitrate) {
+            player = player || self._currentPlayer;
+            if (!player || !(bitrate > 0)) {
+                return;
+            }
+
+            const playerData = getPlayerData(player);
+            if (playerData.isChangingStream || playerData.maxStreamingBitrate === bitrate) {
+                return;
+            }
+
+            playerData.maxStreamingBitrate = bitrate;
+            playerData.sessionStreamingBitrate = bitrate;
+            changeStream(player, getCurrentTicks(player), {
+                MaxStreamingBitrate: bitrate
+            });
+        };
+
+        self.getSessionStreamingBitrate = function (player) {
+            player = player || self._currentPlayer;
+            return getPlayerData(player).sessionStreamingBitrate || null;
+        };
+
+        self.getSavedMaxStreamingBitrate = function (player) {
+            player = player || self._currentPlayer;
+            const playerData = getPlayerData(player);
+            const mediaType = playerData.streamInfo ? playerData.streamInfo.mediaType : null;
+            const currentItem = self.currentItem(player);
+            const apiClient = currentItem ? ServerConnections.getApiClient(currentItem.ServerId) : ServerConnections.currentApiClient();
+            return getSavedMaxStreamingBitrate(apiClient, mediaType);
+        };
+
+        self.isChangingStream = function (player) {
+            player = player || self._currentPlayer;
+            return !!getPlayerData(player).isChangingStream;
+        };
+
+        self.clearSessionStreamingBitrate = function (player) {
+            player = player || self._currentPlayer;
+            const playerData = getPlayerData(player);
+            delete playerData.sessionStreamingBitrate;
+            delete playerData.maxStreamingBitrate;
         };
 
         self.isFullscreen = function (player) {
@@ -1795,6 +1843,15 @@ export class PlaybackManager {
             const playerData = getPlayerData(player);
 
             playerData.isChangingStream = true;
+            if (playerData.changingStreamSafetyTimer) {
+                clearTimeout(playerData.changingStreamSafetyTimer);
+            }
+            playerData.changingStreamSafetyTimer = setTimeout(() => {
+                if (playerData.isChangingStream) {
+                    console.warn('[playbackmanager] clearing stuck isChangingStream flag');
+                    playerData.isChangingStream = false;
+                }
+            }, 20000);
 
             return changeStreamWithEncodingCleanup({
                 playSessionId: playerData.streamInfo ? playSessionId : null,
@@ -1812,12 +1869,20 @@ export class PlaybackManager {
             playerData.streamInfo = streamInfo;
 
             return player.play(streamInfo).then(function () {
+                if (playerData.changingStreamSafetyTimer) {
+                    clearTimeout(playerData.changingStreamSafetyTimer);
+                    playerData.changingStreamSafetyTimer = null;
+                }
                 playerData.isChangingStream = false;
                 streamInfo.started = true;
                 streamInfo.ended = false;
 
                 sendProgressUpdate(player, 'timeupdate');
             }, function (e) {
+                if (playerData.changingStreamSafetyTimer) {
+                    clearTimeout(playerData.changingStreamSafetyTimer);
+                    playerData.changingStreamSafetyTimer = null;
+                }
                 playerData.isChangingStream = false;
 
                 onPlaybackError.call(player, e, {
@@ -4076,6 +4141,13 @@ export class PlaybackManager {
         if (player) {
             if (enableLocalPlaylistManagement(player)) {
                 this._playNextAfterEnded = false;
+            }
+
+            // getPlayerData() returns the player instance; clear stream-change wedge on user stop.
+            player.isChangingStream = false;
+            if (player.changingStreamSafetyTimer) {
+                clearTimeout(player.changingStreamSafetyTimer);
+                player.changingStreamSafetyTimer = null;
             }
 
             // TODO: remove second param

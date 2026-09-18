@@ -13,24 +13,31 @@ The default buffer configuration is:
     "maxBufferLength": 45,
     "highBitrateMaxBufferLength": 15,
     "highBitrateThreshold": 25000000,
-    "maxMaxBufferLength": 120,
-    "maxBufferSize": 134217728,
+    "maxMaxBufferLength": 90,
+    "maxBufferSize": 100663296,
     "backBufferLength": 30
   }
 }
 ```
 
 `maxBufferLength` is the minimum forward target. For Chrome, Edge, and
-Firefox, `highBitrateMaxBufferLength` is used when the actual media source
-bitrate reaches `highBitrateThreshold`.
+Firefox, `highBitrateMaxBufferLength` is used when the **actual media source /
+transcode bitrate** reaches `highBitrateThreshold` (not the Auto ceiling).
 
 `maxMaxBufferLength` is the forward-buffer time ceiling and `maxBufferSize`
-is the byte budget. The default 128 MiB budget allows long buffers for modest
-bitrates without pushing high-bitrate playback toward browser MediaSource
-quota failures.
+is the byte budget (96 MiB). At runtime the time targets are also clamped so
+`bitrate × seconds` cannot exceed that byte budget, which avoids Chrome
+MediaSource quota / `bufferAppendError` failures.
 
 On-demand video transcodes request Jellyfin's adaptive HLS variants. Current
-Jellyfin servers may decline that request for local-network clients.
+Jellyfin servers may decline that request for local-network clients. When Auto
+quality is enabled:
+
+- Sustained `bufferStalledError` session-downshifts `MaxStreamingBitrate` using
+  an ABR ladder (and measured fragment throughput when available).
+- After ~2 minutes of healthy buffer, bitrate can step back up toward the saved
+  Auto ceiling.
+- Saved user preferences are not rewritten.
 
 After building, these values can be changed in the deployed `config.json`
 without rebuilding the JavaScript bundles.
@@ -38,11 +45,13 @@ without rebuilding the JavaScript bundles.
 ## Playback diagnostics
 
 Client playback diagnostics are enabled by default and stored in IndexedDB in
-the browser profile. Samples and events are written as append-only chunks so
-long playback sessions do not repeatedly clone and rewrite the entire run.
-Records contain one-second media samples, forward buffer depth, media events,
-dropped frames, and HLS fragment timing and errors. URL query strings are
-removed before data is stored.
+the browser profile. Healthy playback keeps only summary counters and a short
+pre-incident ring in memory; samples/events are persisted around stall/error
+incident windows. Fragment retries and recoveries are counted in the run summary.
+
+The quality menu shows `Auto (reduced to N Mbps)` when a session downshift is
+active. Player stats show session bitrate, HLS variant count, and measured
+throughput.
 
 Retention and sampling are controlled in `config.json`:
 
@@ -50,12 +59,15 @@ Retention and sampling are controlled in `config.json`:
 {
   "playbackDiagnostics": {
     "enabled": true,
-    "sampleIntervalMs": 1000,
+    "sampleIntervalMs": 2000,
     "flushIntervalMs": 30000,
     "maxRuns": 20,
     "maxAgeDays": 7,
-    "maxEventsPerRun": 50000,
-    "maxSamplesPerRun": 30000,
+    "maxEventsPerRun": 5000,
+    "maxSamplesPerRun": 5000,
+    "preIncidentWindowSeconds": 10,
+    "postIncidentWindowSeconds": 20,
+    "maxIncidentWindows": 20,
     "reportUrl": null
   }
 }

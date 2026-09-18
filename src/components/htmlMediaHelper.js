@@ -273,11 +273,14 @@ export function destroyFlvPlayer(instance) {
     }
 }
 
-export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject) {
+export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, reject, options = {}) {
     let startupReject = reject;
 
     hls.on(Hls.Events.MANIFEST_PARSED, function () {
         recordHlsDiagnostic(instance, 'manifestParsed');
+        options.onManifestParsed?.({
+            levels: hls.levels?.length || 0
+        });
         playWithPromise(elem, onErrorFn).then(function () {
             resolve();
             startupReject = null;
@@ -292,6 +295,10 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
     hls.on(Hls.Events.ERROR, function (event, data) {
         recordHlsDiagnostic(instance, 'error', data);
         console.error('HLS Error: Type: ' + data.type + ' Details: ' + (data.details || '') + ' Fatal: ' + (data.fatal || false));
+
+        if (!data.fatal && data.details === 'bufferStalledError') {
+            options.onBufferStall?.(data);
+        }
 
         // try to recover network error
         if (data.type === Hls.ErrorTypes.NETWORK_ERROR
@@ -373,7 +380,20 @@ export function bindEventsToHlsPlayer(instance, hls, elem, onErrorFn, resolve, r
         [ Hls.Events.LEVEL_LOADED, 'levelLoaded' ]
     ].forEach(([ event, type ]) => {
         if (event) {
-            hls.on(event, (_eventName, data) => recordHlsDiagnostic(instance, type, data));
+            hls.on(event, (_eventName, data) => {
+                recordHlsDiagnostic(instance, type, data);
+                if (type === 'fragmentLoaded') {
+                    const stats = data?.stats || data?.frag?.stats || {};
+                    const loadSeconds = Number.isFinite(stats.loading?.start) && Number.isFinite(stats.loading?.end) ?
+                        (stats.loading.end - stats.loading.start) / 1000 :
+                        null;
+                    options.onFragLoaded?.({
+                        loadedBytes: stats.loaded,
+                        loadSeconds,
+                        levels: hls.levels?.length || 0
+                    });
+                }
+            });
         }
     });
 }

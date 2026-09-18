@@ -37,8 +37,8 @@ const DEFAULT_HLS_BUFFER = Object.freeze({
     maxBufferLength: 45,
     highBitrateMaxBufferLength: 15,
     highBitrateThreshold: 25_000_000,
-    maxMaxBufferLength: 120,
-    maxBufferSize: 128 * 1024 * 1024,
+    maxMaxBufferLength: 90,
+    maxBufferSize: 96 * 1024 * 1024,
     backBufferLength: 30
 });
 
@@ -81,10 +81,23 @@ export function getHlsBufferConfig() {
         });
 }
 
-export function toHlsJsBufferConfig(config, highBitrate = false) {
+export function toHlsJsBufferConfig(config, highBitrate = false, mediaBitrate = 0) {
+    const maxBufferLength = highBitrate ? config.highBitrateMaxBufferLength : config.maxBufferLength;
+    // Lazy import avoided: clamp lives next to bitrate helpers used by the video player.
+    const bytesPerSecond = (Number(mediaBitrate) || 0) / 8;
+    let maxMaxBufferLength = config.maxMaxBufferLength;
+    let target = maxBufferLength;
+
+    if (bytesPerSecond > 0 && config.maxBufferSize > 0) {
+        const maxSeconds = Math.max(6, Math.floor(config.maxBufferSize / bytesPerSecond));
+        maxMaxBufferLength = Math.min(maxMaxBufferLength, maxSeconds);
+        target = Math.min(target, maxMaxBufferLength);
+        maxMaxBufferLength = Math.max(target, maxMaxBufferLength);
+    }
+
     return {
-        maxBufferLength: highBitrate ? config.highBitrateMaxBufferLength : config.maxBufferLength,
-        maxMaxBufferLength: config.maxMaxBufferLength,
+        maxBufferLength: target,
+        maxMaxBufferLength,
         maxBufferSize: config.maxBufferSize,
         backBufferLength: config.backBufferLength
     };
@@ -92,12 +105,12 @@ export function toHlsJsBufferConfig(config, highBitrate = false) {
 
 const DEFAULT_PLAYBACK_DIAGNOSTICS = Object.freeze({
     enabled: true,
-    sampleIntervalMs: 1000,
+    sampleIntervalMs: 2000,
     flushIntervalMs: 30000,
     maxRuns: 20,
     maxAgeDays: 7,
-    maxEventsPerRun: 50000,
-    maxSamplesPerRun: 30000,
+    maxEventsPerRun: 5000,
+    maxSamplesPerRun: 5000,
     preIncidentWindowSeconds: 10,
     postIncidentWindowSeconds: 20,
     maxIncidentWindows: 20,

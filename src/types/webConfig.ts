@@ -28,6 +28,12 @@ export interface PlaybackDiagnosticsConfig {
     maxAgeDays?: number
     maxEventsPerRun?: number
     maxSamplesPerRun?: number
+    preIncidentWindowSeconds?: number
+    postIncidentWindowSeconds?: number
+    maxIncidentWindows?: number
+    maxLocalRunBytes?: number
+    maxCompressedUploadBytes?: number
+    uploadIncidentDiagnostics?: boolean
     reportUrl?: string | null
 }
 
