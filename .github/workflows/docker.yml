@@ -1,12 +1,41 @@
 name: Build Docker image
 
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Container tag to publish
+        required: true
+        type: string
+      extra_tag:
+        description: Additional container tag
+        required: false
+        type: string
+        default: ''
+      platforms:
+        description: Target architecture
+        required: true
+        type: string
+      publish:
+        description: Publish the multi-platform image to GHCR
+        required: true
+        type: boolean
+      ref:
+        description: Commit to build
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       tag:
         description: Container tag to publish
         required: true
         default: latest
+        type: string
+      extra_tag:
+        description: Additional container tag
+        required: false
+        default: ''
         type: string
       platforms:
         description: Target architecture
@@ -22,6 +51,11 @@ on:
         required: true
         default: true
         type: boolean
+      ref:
+        description: Commit, branch, or tag to build. Empty uses the workflow commit.
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -48,6 +82,8 @@ jobs:
       - name: Checkout repository
         if: ${{ contains(inputs.platforms, matrix.arch) }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Set up QEMU
         if: ${{ contains(inputs.platforms, matrix.arch) }}
@@ -65,7 +101,7 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ matrix.platform }}
           build-args: |
-            BUILD_VERSION=${{ github.sha }}
+            BUILD_VERSION=${{ inputs.ref || github.sha }}
           outputs: type=docker,dest=/tmp/jellyfin-web-${{ matrix.arch }}.tar
           tags: jellyfin-web:${{ inputs.tag }}
           cache-from: type=gha,scope=${{ matrix.arch }}
@@ -89,6 +125,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Normalize image name
         id: image
@@ -118,9 +156,10 @@ jobs:
           tags: |
             type=raw,value=${{ inputs.tag }}
             type=sha,prefix=sha-
+            ${{ inputs.extra_tag && format('type=raw,value={0}', inputs.extra_tag) || '' }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
 
       - name: Build and publish image
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -129,7 +168,7 @@ jobs:
           file: ./Dockerfile
           platforms: ${{ inputs.platforms }}
           build-args: |
-            BUILD_VERSION=${{ github.sha }}
+            BUILD_VERSION=${{ inputs.ref || github.sha }}
           push: true
           tags: ${{ steps.metadata.outputs.tags }}
           labels: ${{ steps.metadata.outputs.labels }}

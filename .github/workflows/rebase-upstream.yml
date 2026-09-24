@@ -1,0 +1,115 @@
+name: Rebase onto Jellyfin Web
+
+on:
+  schedule:
+    # Jellyfin tags land rarely; a few checks per day is enough.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Upstream tag, branch, or commit. Empty uses the newest stable tag or GitHub release.
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: rebase-upstream
+  cancel-in-progress: false
+
+env:
+  FORK_BRANCH: master
+  UPSTREAM_REPO: jellyfin/jellyfin-web
+
+jobs:
+  rebase:
+    name: Rebase fork
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.rebase.outputs.sha }}
+      version: ${{ steps.rebase.outputs.version }}
+      build: ${{ steps.rebase.outputs.build }}
+
+    steps:
+      - name: Checkout fork branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.FORK_BRANCH }}
+          fetch-depth: 0
+
+      - name: Rebase onto upstream
+        id: rebase
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_REF: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || '' }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch upstream --tags --force "+refs/heads/*:refs/remotes/upstream/*"
+
+          version=""
+          if [ -n "$REQUESTED_REF" ]; then
+            if git rev-parse --verify --quiet "refs/tags/${REQUESTED_REF}^{commit}" >/dev/null; then
+              target=$(git rev-parse "refs/tags/${REQUESTED_REF}^{commit}")
+              label="$REQUESTED_REF"
+            elif git rev-parse --verify --quiet "refs/remotes/upstream/${REQUESTED_REF}^{commit}" >/dev/null; then
+              target=$(git rev-parse "refs/remotes/upstream/${REQUESTED_REF}^{commit}")
+              label="$REQUESTED_REF"
+            else
+              git fetch upstream "$REQUESTED_REF"
+              target=$(git rev-parse FETCH_HEAD)
+              label="$REQUESTED_REF"
+            fi
+          else
+            best=$(git tag -l 'v*' | grep -E '^v[0-9]+(\.[0-9]+)+(-rc[0-9]+)?$' | sort -V | tail -1)
+            release=$(gh api "repos/${UPSTREAM_REPO}/releases/latest" --jq .tag_name)
+            if [ -n "$release" ]; then
+              best=$(printf '%s\n%s\n' "$best" "$release" | sort -V | tail -1)
+            fi
+            target=$(git rev-parse "${best}^{commit}")
+            label="$best"
+          fi
+
+          if [[ "$label" =~ ^v[0-9] ]]; then
+            version="$label"
+          fi
+
+          before=$(git rev-parse HEAD)
+          if git merge-base --is-ancestor "$target" HEAD; then
+            echo "Already contains ${label} (${target})"
+          else
+            git rebase "$target"
+            git push --force-with-lease origin "HEAD:${FORK_BRANCH}"
+          fi
+          after=$(git rev-parse HEAD)
+
+          build=false
+          if [ "$before" != "$after" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            build=true
+          fi
+
+          echo "sha=${after}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+
+  publish:
+    name: Build container
+    needs: rebase
+    if: needs.rebase.outputs.build == 'true'
+    uses: ./.github/workflows/docker.yml
+    with:
+      tag: latest
+      extra_tag: ${{ needs.rebase.outputs.version }}
+      platforms: linux/amd64,linux/arm64
+      publish: true
+      ref: ${{ needs.rebase.outputs.sha }}
+    permissions:
+      contents: read
+      packages: write
